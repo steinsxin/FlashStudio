@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+    "test:ui": "node scripts/ui-smoke.mjs"
   },
   "dependencies": {
     "react": "^19.1.0",
