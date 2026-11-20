@@ -1,22 +1,40 @@
 # FlashStudio
 
-基于 **Tauri 2 + React + TypeScript + Rust** 的桌面烧录工作台，沿用 CANStudio / MotorStudio 的 Studio 界面风格。当前通过 OpenOCD 驱动探针，专注固件烧录、Flash 擦除和固件校验，不包含芯片调试。
+简洁的桌面烧录工具，使用 Tauri 2 + React + Rust。支持 **Windows x64 / Linux x64**，通过内置 OpenOCD 使用 ST-Link、J-Link 和 CMSIS-DAP，提供固件烧录、独立校验和指定 Flash Bank / 扇区擦除。
 
-## 当前功能
+## 界面
 
-- ST-Link、J-Link、CMSIS-DAP；SWD / JTAG、接口时钟、探针序列号、复位下连接。
-- STM32 F0/F1/F2/F3/F4/F7、G0/G4、H7、L0/L1/L4/L5、U5、WB/WL 配置预设，以及自定义目标 `.cfg`。
-- BIN、HEX/IHEX、ELF/AXF，最大 32 MiB。BIN 使用明确的起始地址；其他格式使用文件内地址，偏移为 0。
-- 烧录时擦除固件覆盖扇区，默认写后校验并复位运行；也可独立校验。
-- 指定 Flash Bank 全部扇区或扇区范围擦除，需要在界面确认目标与范围。**不是整片擦除**，不自动解锁，不修改 Option Bytes；擦除后 CPU 保持暂停。
-- 独立连接检测：复位、读取目标与 Bank 信息，再复位运行并释放探针。界面不会将一次检测当作持续连接。
-- stdout/stderr 实时日志、日志导出、执行参数预览、任务取消和超时终止。每次任务独占一个 OpenOCD 进程；运行时禁止关闭窗口。
-- 固件导入后生成私有临时快照及 SHA-256，避免源文件变化影响本次烧录。更换文件或正常退出会删除快照；强制杀死应用后可能需清理系统临时目录内的 `flashstudio-*` 残留。
-- 本地保存连接/引擎配置、最近 100 条操作记录；深浅主题。记录包含结果、固件指纹和执行参数，日志仅保留最近 1000 行。
+左侧导航切换固件烧录、固件校验和 Flash 擦除，右侧集中完成连接与操作；侧栏底部显示内置引擎状态，并提供帮助与主题切换。默认烧录后校验并复位运行。
 
-## 开发与运行
+- 不提供操作记录页面，不保存任务历史；旧版本的本地历史在升级后清除。
+- SWD / JTAG、序列号、复位下连接和超时放在「高级设置」。
+- 日志默认收起，连接检测或任务失败时自动展开；可导出当前任务最近 1000 行日志。
+- 引擎自动就绪，没有 OpenOCD 路径、scripts 路径或环境配置页面。
+- 保留连接参数与主题偏好；每次启动重新选择固件。
 
-需要 Node.js 22.12+、Rust（支持 edition 2024）、Tauri 2 对应平台的系统依赖，以及单独安装的 OpenOCD 0.12+。仓库暂未内置 OpenOCD。
+支持 BIN、HEX/IHEX、ELF/AXF，最大 32 MiB。BIN 使用明确的起始地址，其他格式使用文件内地址。固件导入后生成临时快照，避免源文件变化影响烧录。指定 Bank 擦除需确认范围；不解除保护、不修改 Option Bytes，不提供芯片调试。
+
+## 自带引擎与离线使用
+
+构建时从 [xPack OpenOCD 的固定发布版本](https://github.com/xpack-dev-tools/openocd-xpack/releases/tag/v0.12.0-7) 下载便携包，使用仓库内的 SHA-256 锁文件校验，保留引擎、配置脚本、动态库与上游许可文件。Linux 包使用自身的 `libexec`，Windows 包保留 DLL。运行时只解析应用资源目录中的引擎，**不查找系统 OpenOCD、不依赖 PATH、不下载组件**。缺少资源时明确报错，不回退到用户机器上的安装。
+
+| 平台 | 分发方式 | 环境处理 |
+| --- | --- | --- |
+| Windows x64 | NSIS 安装程序 | 内置 OpenOCD、DLL、scripts，以及 WebView2 离线安装器 |
+| Linux x64 | AppImage | 内置 OpenOCD 与依赖；AppImage 携带桌面运行库 |
+
+Linux 打包流水线使用 **Ubuntu 22.04**，以控制 glibc 基线。目标是 Ubuntu 22.04+ / Debian 12 等兼容的 glibc 桌面系统，不承诺任意发行版、musl 系统或任意老系统。AppImage 如果遇到 FUSE 限制，可使用 `APPIMAGE_EXTRACT_AND_RUN=1 ./FlashStudio_*.AppImage`。参见 [Tauri AppImage 说明](https://v2.tauri.app/distribute/appimage/)。
+
+Windows 安装器的 WebView2 选项使用 `offlineInstaller`：构建机下载，安装者无需联网下载运行库；不会静默假定用户已经安装。参见 [Tauri Windows 离线安装说明](https://v2.tauri.app/distribute/windows-installer/#offline-installer)。
+
+### USB 访问权限
+
+- **Linux**：在「高级设置」或「使用说明」点击「授权访问探针」，系统通过 polkit / pkexec 请求授权。只安装随包的 OpenOCD udev 规则到 `/etc/udev/rules.d/60-flashstudio.rules` 并重新加载规则，随后重新插拔探针。用户取消授权不会开始任何烧录。主程序和烧录进程仍以普通用户运行。系统需具备 udev、polkit 和桌面授权代理；这些是系统设备权限组件，不能作为普通应用绕过。
+- **Windows**：HID 模式 CMSIS-DAP 通常使用系统驱动；ST-Link、J-Link 及 USB bulk 模式的探针需要与 OpenOCD 兼容的 USB 驱动。这与 OpenOCD 的可执行文件/DLL 是不同层。当前不会自动替换用户的探针驱动，以免影响其他厂商工具；仍需在目标探针上验证驱动兼容性。随包的 `distro-info/licenses/openocd-0.12.0/README.Windows` 说明了上游要求。
+
+## 开发与构建
+
+**开发机**需要 Node.js 22.12+、Python 3、Rust（edition 2024）及对应平台的 Tauri 构建依赖。**安装者不需要这些开发工具**。
 
 ```bash
 cd FlashStudio
@@ -24,61 +42,57 @@ npm ci
 npm run tauri dev
 ```
 
-首次运行在「引擎设置」中检测 `openocd`，或填写完整可执行文件路径。需要时配置 scripts 目录。默认选择 **ST-Link / SWD / STM32F4 / 1000 kHz**，请按实际芯片更改。界面的脚本预设不代表所安装的 OpenOCD 一定包含该脚本或支持所有子型号。
+开发/打包命令会先准备对应平台的内置引擎。首次需要联网下载约 3 MB；准备好的引擎和缓存可供后续离线构建。生成资源不提交到 Git，以固定来源和校验值重建。
 
 ```bash
-npm run build          # TypeScript 检查与前端构建
-npm test               # Rust 命令规划、进程控制测试
-cargo test --locked --manifest-path src-tauri/Cargo.toml -- --include-ignored # 另含本机 OpenOCD 无硬件测试
+npm run engine:prepare                 # 准备并校验当前平台引擎
+npm run build                          # 前端构建
+npm test                               # Rust 与真实内置引擎的无硬件测试
+python3 scripts/test-prepare-openocd.py # 下载校验/路径安全测试（Windows 使用 python）
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-npm run tauri build    # 本机构建桌面包
+npm run package:linux                  # 在 Ubuntu 22.04 构建 AppImage
+npm run package:windows                # 在 Windows x64 构建离线 NSIS 安装程序
 ```
 
-`npm run dev` 仅启动浏览器预览；浏览器中禁止连接、导入固件和执行硬件操作。
+离线准备或交叉准备引擎：
 
-## 使用流程
-
-1. 为目标板供电，正确连接探针。Linux 需具备 USB 访问权限（通常使用 OpenOCD 提供的 udev 规则）；其他平台安装适当 USB 驱动。
-2. 选择探针和目标配置，填写频率。多个同类探针同时连接时填写序列号。复位下连接需要 NRST。
-3. 点击「检测连接」，在日志中检查识别结果与 Bank 编号。此操作会复位芯片。
-4. 选择固件。BIN 默认地址 `0x08000000`，有 Bootloader 时按实际内存布局填写偏移地址。
-5. 执行烧录或独立校验；需要擦除时切换「Flash 擦除」并确认 Bank / 扇区范围。
-
-烧录会影响整个覆盖扇区，扇区内其他数据也可能被清除。取消或超时只终止进程，已经执行的写入/擦除不会回滚。应重新烧录有效固件并校验。固件 SHA-256 是文件指纹；设备内容校验由 OpenOCD `verify_image` 执行。
-
-## 代码结构
-
-```text
-src/App.tsx                  工作台、记录、设置和操作状态
-src/lib/flash.ts              前端类型、预设、配置校验和存储
-src/components/Icon.tsx       复用 Studio 图标风格
-src-tauri/src/engine.rs       配置校验与 OpenOCD 命令规划，无硬件访问
-src-tauri/src/runner.rs       子进程、输出、超时、取消和回收
-src-tauri/src/lib.rs          Tauri 命令、固件快照、任务互斥与状态
-scripts/ui-smoke.mjs          浏览器与模拟桌面桥接的交互测试
+```bash
+npm run engine:prepare -- --platform linux-x64 --archive /path/to/xpack-openocd-0.12.0-7-linux-x64.tar.gz
+npm run engine:prepare -- --platform win32-x64 --archive C:/path/to/xpack-openocd-0.12.0-7-win32-x64.zip
 ```
 
-探针类型与执行引擎分开：ST-Link、J-Link、CMSIS-DAP 当前都是 OpenOCD 的适配器。以后接入厂商独立工具时，可增加新的命令规划/执行实现，继续沿用任务、日志与固件模型；当前不预留无功能的调试入口。
+离线压缩包仍须通过固定 SHA-256；错误或损坏的包不会替换现有引擎。交叉准备之后应使用匹配目标构建，Rust build script 会拒绝平台不一致的资源。
 
-OpenOCD 使用独立参数启动，不经过 Shell。Tcl 参数转义覆盖变量、命令与括号解析。ST-Link 传输按实际驱动选择 `hla_*` / `dapdirect_*`；目标脚本加载后再应用用户时钟。禁用 GDB、Tcl、Telnet 监听。成功须同时满足进程正常退出和任务完成标记，Tcl 错误显式返回失败。
+`.github/workflows/desktop.yml` 可手动触发，或在推送 `v*` 标签时构建 Ubuntu 22.04 AppImage 与 Windows NSIS，结果作为工作流附件；不自动发布 Release。
 
-自定义目标 `.cfg` 是本机执行的 OpenOCD 脚本，请使用可信配置。多核、双 Bank 或外部 Flash 的具体配置应按目标芯片单独验证。
+## 验证范围
 
-## UI 验证
+已经验证：
 
-在两个终端启动专用预览与隔离浏览器：
+- Windows/Linux 便携发布包下载、SHA-256、目录结构与库文件。
+- Linux 引擎在干净 Ubuntu 22.04 容器中，以普通用户、空 PATH、无网络运行，解析三种探针配置；容器中没有安装系统 OpenOCD。
+- 内置引擎命令规划、路径转义、退出码、单独校验、擦除确认、进程取消与超时。
+- 单窗口 UI、无历史和引擎路径输入、高级设置折叠、模拟 USB 授权成功/取消、烧录/校验/擦除流程、800px 最小窗口。
+
+尚需验收：真实 STM32 板卡烧录、真实系统授权窗口、Windows 驱动兼容性，以及最终安装包在目标桌面系统上的安装运行。容器测试验证的是 **烧录引擎的可携带性**，不等于整个图形应用已在所有 Linux 桌面通过验收。
+
+UI 测试需要启动专用 Vite 与隔离 Chrome：
 
 ```bash
 npm run dev -- --host 127.0.0.1 --port 1430
 google-chrome-stable --headless=new --disable-gpu --remote-debugging-port=9334 --user-data-dir=/tmp/flashstudio-chrome about:blank
+npm run test:ui
 ```
 
-然后运行 `npm run test:ui`。可通过 `FLASHSTUDIO_UI_URL` / `FLASHSTUDIO_CDP_PORT` 更改地址。测试使用模拟 Tauri 桥接，不会接触硬件；截图写入 `/tmp/flashstudio-*.png`。
+测试使用模拟 Tauri 桥接，不会连接硬件或请求真实 root 授权。地址可通过 `FLASHSTUDIO_UI_URL` / `FLASHSTUDIO_CDP_PORT` 设置。
 
-验证范围包括浏览器禁用硬件操作、文件导入、BIN 地址校验、运行时互斥、烧录/校验/擦除请求、擦除确认、取消、失败恢复、历史记录、设置持久化、主题和最小窗口布局。实物探针、具体 STM32 子型号以及各操作系统的打包仍需硬件/平台验收。
+## 主要代码
 
-## OpenOCD 参考
+- `src/App.tsx`：单窗口工作流与高级选项。
+- `src-tauri/src/bundled.rs`：内置资源定位，禁止回退系统引擎。
+- `src-tauri/src/engine.rs`：OpenOCD 命令规划与参数校验。
+- `src-tauri/src/runner.rs`：子进程、日志、取消和超时。
+- `scripts/prepare-openocd.py`、`packaging/openocd.lock.json`：固定引擎下载与完整性验证。
+- `packaging/linux/install-usb-rules.sh`：用户授权后的 USB 权限配置。
 
-- [探针与传输配置](https://openocd.org/doc/html/Debug-Adapter-Configuration.html)
-- [Flash 命令与擦除范围](https://openocd.org/doc/html/Flash-Commands.html)
-- [烧录流程](https://openocd.org/doc/html/Flash-Programming.html)
+第三方组件信息见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

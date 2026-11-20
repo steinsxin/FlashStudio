@@ -34,7 +34,7 @@ function installFixture() {
   let callbacks = 1;
   const handlers = new Map();
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
-  window.__fixture = { job: null, firmware: null, starts: [], reject: false, cancelCount: 0 };
+  window.__fixture = { job: null, firmware: null, starts: [], reject: false, cancelCount: 0, authorization: 0, denyAuthorization: false, usbRulesInstalled: false };
   window.__TAURI_INTERNALS__ = {
     transformCallback(callback) { const id = callbacks++; handlers.set(id, callback); return id; },
     unregisterCallback(id) { handlers.delete(id); },
@@ -43,9 +43,9 @@ function installFixture() {
       if (command === 'plugin:event|listen') return 1;
       if (command === 'plugin:event|unlisten') return null;
       if (command === 'get_job') return f.job ? structuredClone(f.job) : null;
-      if (command === 'check_engine') return 'Open On-Chip Debugger 0.12.0 (UI fixture)';
+      if (command === 'check_engine') return { version: '0.12.0-7', platform: 'linux-x64', canAuthorizeUsb: true, usbRulesInstalled: f.usbRulesInstalled };
+      if (command === 'authorize_usb') { f.authorization++; if (f.denyAuthorization) throw 'USB 授权未完成（已取消）'; f.usbRulesInstalled = true; return 'USB 权限已配置，请重新插拔探针后再检测连接。'; }
       if (command === 'import_firmware') { f.firmware = { id: 'image-1', name: args.name, format: args.name.endsWith('.hex') ? 'ihex' : 'bin', size: args.bytes.length, sha256: 'a'.repeat(64) }; return f.firmware; }
-      if (command === 'preview_operation') return { executable: 'openocd', args: ['-f', args.request.config.target, '-c', 'fixture only'], timeoutSecs: 120 };
       if (command === 'start_operation') {
         if (f.reject) throw 'OpenOCD test launch failure';
         if (f.job?.status === 'running') throw '已有任务正在执行';
@@ -64,36 +64,44 @@ const file = async (name) => evaluate(`(()=>{const input=document.querySelector(
 let fixtureId;
 try {
   await cdp('Runtime.enable'); await cdp('Page.enable');
-  await cdp('Emulation.setDeviceMetricsOverride', { width: 1366, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1000, height: 760, deviceScaleFactor: 1, mobile: false });
   await cdp('Page.navigate', { url: base }); await delay(500);
-  await until(`document.querySelector('h1')?.textContent==='烧录工作台'`);
-  await evaluate('localStorage.clear()'); await cdp('Page.reload'); await delay(500);
-  await until(`document.body.innerText.includes('浏览器预览模式')`);
+  await until(`document.querySelector('.brand')?.textContent==='FlashStudio'`);
+  await evaluate(`localStorage.clear(); localStorage.setItem('flashstudio.records','[{"id":"obsolete"}]'); localStorage.setItem('flashstudio.config', JSON.stringify({executable:'/bad/old/openocd',scriptsDir:'/bad/scripts'}))`); await cdp('Page.reload'); await delay(500);
+  await until(`document.body.innerText.includes('浏览器预览')`);
   assert.equal(await evaluate(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='开始烧录').disabled`), true);
   assert.equal(await evaluate(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='检测连接').disabled`), true);
   await screenshot('preview');
   fixtureId = (await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `(${installFixture.toString()})();` })).identifier;
   await cdp('Page.reload'); await delay(500);
-  await until(`document.body.innerText.includes('桌面模式') && !document.querySelector('.probe-button').disabled`);
-  assert.equal(await evaluate(`document.querySelectorAll('[role=tab]').length`), 3);
+  await until(`document.body.innerText.includes('内置引擎就绪') && !document.querySelector('.probe-button').disabled`);
+  assert.equal(await evaluate(`document.querySelectorAll('nav button').length`), 3);
+  assert.equal(await evaluate(`document.querySelector('nav [aria-current=page]')?.textContent`), '固件烧录');
+  assert.equal(await evaluate(`document.body.innerText.includes('操作记录') || document.body.innerText.includes('引擎设置')`), false);
+  assert.equal(await evaluate(`localStorage.getItem('flashstudio.records')`), null);
+  assert.equal(await evaluate(`JSON.parse(localStorage.getItem('flashstudio.config')).executable`), undefined);
+  assert.equal(await evaluate(`!!document.querySelector('.advanced-panel') || !!document.querySelector('.log-content')`), false);
+  assert.equal(await evaluate(`document.querySelector('.execution-row').getBoundingClientRect().bottom < innerHeight - 28`), true);
+  await screenshot('sidebar-workspace');
   await file('application.bin');
   await until(`document.querySelector('.firmware-drop strong').textContent==='application.bin'`);
   await input('[aria-label="BIN 起始地址"]', '0x100000000');
   assert.equal(await evaluate(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='开始烧录').disabled`), true);
   await input('[aria-label="BIN 起始地址"]', '0x08004000');
-  await click('J-Link'); await select('[aria-label="目标芯片"]', 'target/stm32g4x.cfg');
+  await select('[aria-label="烧录探针"]', 'jlink'); await select('[aria-label="目标芯片"]', 'target/stm32g4x.cfg');
   await click('开始烧录');
   await until(`document.body.innerText.includes('固件烧录进行中')`);
   assert.equal(await evaluate(`document.querySelector('input[type=file]').disabled`), true);
   assert.equal(await evaluate(`document.querySelector('.connection-card fieldset').disabled`), true);
+  assert.equal(await evaluate(`[...document.querySelectorAll('nav button')].every(button => button.disabled)`), true);
   const sent = await evaluate('window.__fixture.starts[0]');
   assert.equal(sent.address, '0x08004000'); assert.equal(sent.config.adapter, 'jlink'); assert.equal(sent.config.target, 'target/stm32g4x.cfg'); assert.equal(sent.verifyAfterWrite, true);
   await click('取消操作'); await click('继续等待'); assert.equal(await evaluate('window.__fixture.cancelCount'), 0);
   await finish('success', '烧录与校验完成'); await until(`document.body.innerText.includes('固件烧录 · 成功')`);
-  await click('操作记录'); await until(`document.querySelectorAll('tbody tr').length===1`);
-  await click('烧录工作台');
   await screenshot('desktop-success');
   await click('固件校验'); await file('application.hex');
+  assert.equal(await evaluate(`document.querySelector('nav [aria-current=page]')?.textContent`), '固件校验');
+  assert.equal(await evaluate(`document.querySelector('h1')?.textContent`), '固件校验');
   await until(`document.querySelector('.firmware-drop strong').textContent==='application.hex'`);
   assert.equal(await evaluate(`document.querySelector('[aria-label="BIN 起始地址"]').disabled`), true);
   await click('开始校验'); await finish('failed', 'verify mismatch');
@@ -114,27 +122,37 @@ try {
   assert.equal(await evaluate('window.__fixture.starts.at(-1).bank'), 1);
   await click('取消操作'); await click('确认取消');
   await until(`document.body.innerText.includes('Flash 擦除 · 已取消')`);
-  await click('引擎设置'); await click('检测引擎');
-  await until(`document.body.innerText.includes('Open On-Chip Debugger 0.12.0')`);
+  await click('高级设置');
+  await evaluate('window.__fixture.denyAuthorization=true');
+  await click('授权访问探针');
+  await until(`document.querySelector('[role=alert]')?.textContent.includes('已取消')`);
+  assert.equal(await evaluate(`document.querySelector('.connection-fields').disabled`), false);
+  await evaluate('window.__fixture.denyAuthorization=false');
+  await click('授权访问探针');
+  await until(`document.body.innerText.includes('USB 权限已配置')`);
+  assert.equal(await evaluate('window.__fixture.authorization'), 2);
+  await click('高级设置');
   await evaluate(`document.querySelector('[aria-label="切换深色主题"]').click()`);
-  await screenshot('settings-dark');
-  await click('烧录工作台'); await click('固件烧录');
+  await delay(200); await screenshot('sidebar-dark');
+  await click('固件烧录');
   await evaluate('window.__fixture.reject=true'); await click('开始烧录');
   await until(`document.querySelector('[role=alert]')?.textContent.includes('OpenOCD test launch failure')`);
   assert.equal(await evaluate('document.querySelector(".connection-card fieldset").disabled'), false);
-  await click('操作记录'); await until(`document.querySelectorAll('tbody tr').length===3`);
-  await cdp('Page.reload'); await delay(500); await until(`document.querySelector('h1')?.textContent==='烧录工作台'`);
+  assert.equal(await evaluate(`localStorage.getItem('flashstudio.records')`), null);
+  await cdp('Page.reload'); await delay(500); await until(`document.querySelector('.brand')?.textContent==='FlashStudio'`);
   assert.equal(await evaluate(`document.querySelector('[aria-label="目标芯片"]').value`), 'target/stm32g4x.cfg');
   assert.equal(await evaluate(`document.documentElement.dataset.theme`), 'dark');
-  assert.equal(await evaluate(`document.querySelector('.firmware-drop strong').textContent`), '点击选择或拖入固件文件');
-  await click('操作记录'); await until(`document.querySelectorAll('tbody tr').length===3`);
-  await cdp('Emulation.setDeviceMetricsOverride', { width: 980, height: 700, deviceScaleFactor: 1, mobile: false });
-  await click('烧录工作台');
+  assert.equal(await evaluate(`document.querySelector('.firmware-drop strong').textContent`), '选择或拖入固件文件');
+  assert.equal(await evaluate(`localStorage.getItem('flashstudio.records')`), null);
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 800, height: 650, deviceScaleFactor: 1, mobile: false });
+
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
   assert.equal(await evaluate('document.querySelector("main").scrollWidth <= document.querySelector("main").clientWidth'), true);
+  assert.equal(await evaluate(`document.querySelector('nav button').getBoundingClientRect().width > 100 && document.querySelector('.sidebar').getBoundingClientRect().right <= document.querySelector('main').getBoundingClientRect().left`), true);
+  assert.equal(await evaluate(`document.querySelector('.execution-row').getBoundingClientRect().bottom <= innerHeight - 28`), true);
   await screenshot('minimum-window');
   assert.deepEqual(errors, []);
-  console.log('PASS: browser guard, file import, address validation, busy lock, flash/verify/erase, confirmation, cancellation, engine detection, failure recovery, history, persistence, theme, 980px layout.');
+  console.log('PASS: sidebar navigation, browser guard, file import, address validation, busy lock, flash/verify/erase, confirmation, cancellation, engine detection, failure recovery, no history or engine paths, USB authorization and rejection, persistence, theme, 800px layout.');
 } finally {
   if (fixtureId) await cdp('Page.removeScriptToEvaluateOnNewDocument', { identifier: fixtureId });
   socket.close();

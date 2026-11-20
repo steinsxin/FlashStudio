@@ -5,7 +5,7 @@ export type Adapter = "stlink" | "jlink" | "cmsis-dap";
 export type Operation = "probe" | "flash" | "verify" | "erase";
 export type JobStatus = "running" | "success" | "failed" | "cancelled";
 export interface Config {
-  executable: string; scriptsDir: string; adapter: Adapter; transport: "swd" | "jtag";
+  adapter: Adapter; transport: "swd" | "jtag";
   serial: string; target: string; speedKhz: number; connectUnderReset: boolean; timeoutSecs: number;
 }
 export interface Firmware { id: string; name: string; size: number; format: string; sha256: string }
@@ -20,7 +20,7 @@ export interface Job {
   message: string; logs: { sequence: number; time: number; text: string }[]; nextSequence: number;
   plan: Plan; request: OperationRequest; firmware: Firmware | null;
 }
-export type RecordEntry = Omit<Job, "logs">;
+export interface EngineInfo { version: string; platform: string; canAuthorizeUsb: boolean; usbRulesInstalled: boolean }
 export const adapters: { id: Adapter; name: string; description: string }[] = [
   { id: "stlink", name: "ST-Link", description: "STMicroelectronics" },
   { id: "jlink", name: "J-Link", description: "SEGGER" },
@@ -34,7 +34,7 @@ export const targets = [
   ["STM32L5", "stm32l5x"], ["STM32U5", "stm32u5x"], ["STM32WB", "stm32wbx"], ["STM32WL", "stm32wlx"],
 ].map(([name, file]) => ({ name, path: `target/${file}.cfg` }));
 export const defaults: Config = {
-  executable: "openocd", scriptsDir: "", adapter: "stlink", transport: "swd", serial: "",
+  adapter: "stlink", transport: "swd", serial: "",
   target: "target/stm32f4x.cfg", speedKhz: 1000, connectUnderReset: false, timeoutSecs: 120,
 };
 export const operationNames: Record<Operation, string> = { probe: "连接检测", flash: "固件烧录", verify: "固件校验", erase: "Flash 擦除" };
@@ -53,20 +53,8 @@ export function loadConfig(): Config {
     return result;
   } catch { return { ...defaults }; }
 }
-export function loadRecords(): RecordEntry[] {
-  try {
-    const data: unknown = JSON.parse(localStorage.getItem("flashstudio.records") ?? "[]");
-    return Array.isArray(data) ? data.filter((r): r is RecordEntry =>
-      r && typeof r.id === "string" && r.operation in operationNames && ["success", "failed", "cancelled"].includes(r.status)
-      && typeof r.startedAt === "number" && typeof r.finishedAt === "number" && typeof r.message === "string"
-      && r.request?.config && typeof r.request.config.target === "string" && adapters.some(a => a.id === r.request.config.adapter)
-      && Array.isArray(r.plan?.args) && typeof r.plan?.executable === "string"
-    ).slice(0, 100) : [];
-  } catch { return []; }
-}
 export function validate(request: OperationRequest): string {
   const c = request.config;
-  if (!c.executable.trim()) return "请在引擎设置中填写 OpenOCD 路径";
   if (!c.target.trim().toLowerCase().endsWith(".cfg")) return "请选择目标芯片或填写 .cfg 配置路径";
   if (!Number.isInteger(c.speedKhz) || c.speedKhz < 1 || c.speedKhz > 50000) return "接口时钟须在 1–50000 kHz 之间";
   if (!Number.isInteger(c.timeoutSecs) || c.timeoutSecs < 5 || c.timeoutSecs > 3600) return "任务超时须在 5–3600 秒之间";

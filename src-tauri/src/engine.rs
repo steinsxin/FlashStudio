@@ -5,7 +5,9 @@ use std::path::Path;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionConfig {
+    #[serde(skip)]
     pub executable: String,
+    #[serde(skip)]
     pub scripts_dir: String,
     pub adapter: Adapter,
     pub transport: Transport,
@@ -63,7 +65,7 @@ pub struct Plan {
 
 pub fn validate_config(c: &ConnectionConfig) -> Result<(), String> {
     if c.executable.trim().is_empty() || c.executable.contains('\0') {
-        return Err("请设置 OpenOCD 可执行文件路径".into());
+        return Err("内置引擎路径无效，请重新安装 FlashStudio".into());
     }
     if c.target.trim().is_empty()
         || !c.target.to_lowercase().ends_with(".cfg")
@@ -140,7 +142,7 @@ pub fn build_plan(r: &OperationRequest, firmware: Option<(&Path, &str)>) -> Resu
     // Disable every debug/control listener; the process only lives for one job.
     args.extend([
         "-c".into(),
-        "gdb_port disabled; tcl_port disabled; telnet_port disabled".into(),
+        "gdb port disabled; tcl port disabled; telnet port disabled".into(),
     ]);
     let interface = match c.adapter {
         Adapter::Stlink => "interface/stlink.cfg",
@@ -152,8 +154,8 @@ pub fn build_plan(r: &OperationRequest, firmware: Option<(&Path, &str)>) -> Resu
         Transport::Swd => "swd",
         Transport::Jtag => "jtag",
     };
-    // ST-Link's default script changed between releases (HLA -> direct DAP).
-    args.extend(["-c".into(), format!("if {{[adapter name] eq \"hla\"}} {{ transport select hla_{transport} }} elseif {{[adapter name] eq \"st-link\"}} {{ transport select dapdirect_{transport} }} else {{ transport select {transport} }}")]);
+    // The pinned engine uses the unified SWD/JTAG names for the ST-Link DAP driver.
+    args.extend(["-c".into(), format!("if {{[adapter name] eq \"hla\"}} {{ transport select hla_{transport} }} else {{ transport select {transport} }}")]);
     if !c.serial.trim().is_empty() {
         args.extend([
             "-c".into(),
@@ -334,23 +336,28 @@ mod tests {
                 .position(|s| s == "adapter speed 4000")
                 .unwrap();
             assert!(speed > target);
-            assert!(p.args.iter().any(|s| s.contains("gdb_port disabled")));
+            assert!(p.args.iter().any(|s| s.contains("gdb port disabled")));
         }
     }
 
     #[test]
-    #[ignore = "Requires a locally installed OpenOCD; parses scripts only, never initializes hardware"]
-    fn installed_openocd_parses_adapter_and_target_configs() {
+    fn bundled_openocd_parses_adapter_and_target_configs() {
+        let engine = crate::bundled::from_root(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/openocd"),
+        )
+        .unwrap();
         for adapter in [Adapter::Stlink, Adapter::Jlink, Adapter::CmsisDap] {
             for transport in [Transport::Swd, Transport::Jtag] {
                 let mut r = request(Operation::Probe);
                 r.config.adapter = adapter;
                 r.config.transport = transport;
+                r.config.executable = engine.executable.to_string_lossy().into_owned();
+                r.config.scripts_dir = engine.scripts.to_string_lossy().into_owned();
                 let mut plan = build_plan(&r, None).unwrap();
                 // Replace the entire operation BEFORE launching. OpenOCD exits
                 // during configuration and never invokes init or a USB driver.
                 *plan.args.last_mut().unwrap() = "echo CONFIG_PARSED; shutdown".into();
-                let result = std::process::Command::new("openocd")
+                let result = std::process::Command::new(&plan.executable)
                     .args(&plan.args)
                     .output()
                     .unwrap();
@@ -369,8 +376,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Requires a locally installed OpenOCD; hardware commands are replaced with Tcl fixtures"]
-    fn installed_openocd_executes_quoted_paths_and_propagates_verify_failure() {
+    fn bundled_openocd_executes_quoted_paths_and_propagates_verify_failure() {
+        let engine = crate::bundled::from_root(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/openocd"),
+        )
+        .unwrap();
         // Jim Tcl itself parses the generated command. No target/adapter config
         // is loaded, and every hardware command is replaced before execution.
         let fixture = "foreach cmd {init reset flash verify_image} { if {[llength [info commands $cmd]]} {rename $cmd fs_original_$cmd}; proc $cmd {args} {} }; proc flash {args} {echo [lindex $args 2]}";
@@ -386,7 +396,7 @@ mod tests {
             } else {
                 fixture.into()
             };
-            let result = std::process::Command::new("openocd")
+            let result = std::process::Command::new(&engine.executable)
                 .args(["-c", &setup, "-c", plan.args.last().unwrap()])
                 .output()
                 .unwrap();
@@ -402,5 +412,15 @@ mod tests {
                 assert!(output.contains("VERIFY_MISMATCH"));
             }
         }
+    }
+
+    #[test]
+    fn frontend_cannot_override_bundled_engine_paths() {
+        let mut value = serde_json::to_value(request(Operation::Probe).config).unwrap();
+        value["executable"] = "/untrusted/old/openocd".into();
+        value["scriptsDir"] = "/untrusted/scripts".into();
+        let config: ConnectionConfig = serde_json::from_value(value).unwrap();
+        assert!(config.executable.is_empty());
+        assert!(config.scripts_dir.is_empty());
     }
 }

@@ -1,3 +1,4 @@
+mod bundled;
 mod engine;
 mod runner;
 
@@ -166,13 +167,18 @@ fn plan_for(request: &OperationRequest, runtime: &Runtime) -> Result<Plan, Strin
 }
 
 #[tauri::command]
-fn preview_operation(request: OperationRequest, studio: State<'_, Studio>) -> Result<Plan, String> {
-    let runtime = studio.0.lock().map_err(|e| e.to_string())?;
-    plan_for(&request, &runtime)
-}
-
-#[tauri::command]
-fn start_operation(request: OperationRequest, studio: State<'_, Studio>) -> Result<Job, String> {
+fn start_operation(
+    mut request: OperationRequest,
+    app: tauri::AppHandle,
+    studio: State<'_, Studio>,
+) -> Result<Job, String> {
+    let engine = bundled::resolve(&app)?;
+    request.config.executable = engine.executable.to_str().ok_or("引擎路径无法识别")?.into();
+    request.config.scripts_dir = engine
+        .scripts
+        .to_str()
+        .ok_or("引擎脚本路径无法识别")?
+        .into();
     let mut runtime = studio.0.lock().map_err(|e| e.to_string())?;
     if runtime.cancel.is_some() || runtime.checking {
         return Err("已有任务正在执行".into());
@@ -273,13 +279,17 @@ fn cancel_operation(job_id: String, studio: State<'_, Studio>) -> Result<(), Str
 }
 
 #[tauri::command]
-async fn check_engine(executable: String, studio: State<'_, Studio>) -> Result<String, String> {
-    if executable.trim().is_empty() {
-        return Err("请填写 OpenOCD 路径".into());
-    }
+async fn check_engine(
+    app: tauri::AppHandle,
+    studio: State<'_, Studio>,
+) -> Result<bundled::EngineInfo, String> {
+    let engine = bundled::resolve(&app)?;
     {
         let mut state = studio.0.lock().map_err(|e| e.to_string())?;
-        if state.cancel.is_some() || state.checking {
+        if state.cancel.is_some() {
+            return Ok(engine.info);
+        }
+        if state.checking {
             return Err("已有任务正在执行".into());
         }
         state.checking = true;
@@ -289,7 +299,7 @@ async fn check_engine(executable: String, studio: State<'_, Studio>) -> Result<S
         let copy = lines.clone();
         let result = runner::execute(
             &Plan {
-                executable: executable.trim().into(),
+                executable: engine.executable.to_string_lossy().into_owned(),
                 args: vec!["--version".into()],
                 timeout_secs: 5,
             },
@@ -314,6 +324,47 @@ async fn check_engine(executable: String, studio: State<'_, Studio>) -> Result<S
     .await
     .map_err(|e| e.to_string());
     studio.0.lock().map_err(|e| e.to_string())?.checking = false;
+    result??;
+    Ok(bundled::resolve(&app)?.info)
+}
+
+#[tauri::command]
+async fn authorize_usb(app: tauri::AppHandle, studio: State<'_, Studio>) -> Result<String, String> {
+    if !cfg!(target_os = "linux") {
+        return Err("此功能仅用于 Linux USB 权限配置".into());
+    }
+    bundled::resolve(&app)?;
+    let helper = app
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?
+        .join("install-usb-rules.sh");
+    if !helper.is_file() {
+        return Err("USB 授权组件缺失，请重新安装".into());
+    }
+    {
+        let mut state = studio.0.lock().map_err(|e| e.to_string())?;
+        if state.cancel.is_some() || state.checking {
+            return Err("请等待当前任务完成".into());
+        }
+        state.checking = true;
+    }
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let output = std::process::Command::new("/usr/bin/pkexec")
+            .args(["/bin/sh", helper.to_str().ok_or("授权组件路径无效")?])
+            .output()
+            .map_err(|e| format!("无法打开系统授权窗口：{e}。系统需要提供 polkit / pkexec。"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "USB 授权未完成（已取消或系统拒绝）：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok("USB 权限已配置，请重新插拔探针后再检测连接。".to_string())
+    })
+    .await
+    .map_err(|e| e.to_string());
+    studio.0.lock().map_err(|e| e.to_string())?.checking = false;
     result?
 }
 
@@ -334,11 +385,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             import_firmware,
-            preview_operation,
             start_operation,
             get_job,
             cancel_operation,
-            check_engine
+            check_engine,
+            authorize_usb
         ])
         .run(tauri::generate_context!())
         .expect("error while running FlashStudio");

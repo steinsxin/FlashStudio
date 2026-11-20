@@ -45,9 +45,16 @@ pub fn execute(
     let mut command = Command::new(&plan.executable);
     command
         .args(&plan.args)
+        .env_remove("OPENOCD_SCRIPTS")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let executable = std::path::Path::new(&plan.executable);
+    if executable.is_absolute()
+        && let Some(parent) = executable.parent()
+    {
+        command.current_dir(parent);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

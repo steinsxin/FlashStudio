@@ -11,6 +11,10 @@ node_modules
 dist
 dist-ssr
 dist-packages/
+.cache/
+__pycache__/
+src-tauri/resources/openocd/
+src-tauri/resources/.openocd-stage-*/
 *.local
 
 # Editor directories and files
