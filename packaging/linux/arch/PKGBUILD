@@ -1,0 +1,20 @@
+# Local binary package, staged by build.mjs. No application license is declared.
+pkgname=flashstudio
+# Replaced from VERSION by build.mjs before makepkg is invoked.
+pkgver=0
+pkgrel=1
+pkgdesc='STM32 firmware programming with bundled OpenOCD'
+arch=('x86_64')
+license=()
+depends=(
+  'cairo' 'dbus' 'gcc-libs' 'gdk-pixbuf2' 'glib2' 'glibc' 'gtk3'
+  'hicolor-icon-theme' 'libsoup3' 'polkit' 'systemd' 'webkit2gtk-4.1' 'xdg-utils'
+)
+# Preserve pinned OpenOCD files byte-for-byte; do not strip vendor binaries.
+options=('!strip' '!debug')
+source=('payload.tar.gz')
+sha256sums=('SKIP')
+
+package() {
+  cp -a "$srcdir/payload/." "$pkgdir/"
+}

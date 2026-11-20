@@ -1,6 +1,6 @@
 [package]
 name = "flashstudio"
-version = "0.1.0"
+version = "1.0.0"
 description = "FlashStudio OpenOCD firmware programming workspace"
 authors = ["FlashStudio"]
 edition = "2024"

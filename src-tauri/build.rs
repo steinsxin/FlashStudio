@@ -46,11 +46,19 @@ fn main() {
         std::path::Path::new("resources/openocd"),
         &profile.join("openocd"),
     );
+    if platform == "linux-x64" {
+        println!("cargo:rerun-if-changed=../packaging/linux/install-usb-rules.sh");
+        std::fs::copy(
+            "../packaging/linux/install-usb-rules.sh",
+            profile.join("install-usb-rules.sh"),
+        )
+        .expect("Cannot stage USB authorization helper");
+    }
     std::fs::copy(
-        "../packaging/linux/install-usb-rules.sh",
-        profile.join("install-usb-rules.sh"),
+        "../THIRD_PARTY_NOTICES.md",
+        profile.join("THIRD_PARTY_NOTICES.md"),
     )
-    .expect("Cannot stage USB authorization helper");
+    .expect("Cannot stage third-party notices");
     println!(
         "cargo:rustc-env=FLASHSTUDIO_BUILD_RESOURCE_DIR={}",
         profile.display()

@@ -1,0 +1,117 @@
+name: Arch Linux package
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Match MotorStudio: separate official Arch bootstrap roots for build/install.
+      - name: Prepare Arch Linux environments
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl zstd
+          stage_dir="$(mktemp -d "$RUNNER_TEMP/flashstudio-arch-XXXXXXXX")"
+          cd "$stage_dir"
+          mirror='https://geo.mirror.pkgbuild.com/iso/latest'
+          archive='archlinux-bootstrap-x86_64.tar.zst'
+          curl --fail --location --retry 3 --proto '=https' -o sha256sums.txt "$mirror/sha256sums.txt"
+          curl --fail --location --retry 3 --proto '=https' -o "$archive" "$mirror/$archive"
+          awk '$2 == "archlinux-bootstrap-x86_64.tar.zst" { print; found = 1 } END { if (!found) exit 1 }' \
+            sha256sums.txt > bootstrap.sha256
+          sha256sum --check bootstrap.sha256
+          for environment in build verify; do
+            mkdir "$environment"
+            sudo tar --zstd -xf "$archive" -C "$environment"
+            arch_root="$stage_dir/$environment/root.x86_64"
+            printf 'ARCH_%s_ROOT=%s\n' "${environment^^}" "$arch_root" >> "$GITHUB_ENV"
+            printf '%s\n' 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' \
+              | sudo tee "$arch_root/etc/pacman.d/mirrorlist" >/dev/null
+            sudo rm -f "$arch_root/etc/resolv.conf"
+            sudo cp -L /etc/resolv.conf "$arch_root/etc/resolv.conf"
+            sudo mount --bind "$arch_root" "$arch_root"
+            sudo mount --make-private "$arch_root"
+          done
+          sudo mkdir "$stage_dir/build/root.x86_64/workspace"
+          git -C "$GITHUB_WORKSPACE" archive HEAD \
+            | sudo tar -x -C "$stage_dir/build/root.x86_64/workspace"
+          sudo mkdir "$stage_dir/verify/root.x86_64/checks"
+          sudo cp -r "$GITHUB_WORKSPACE/packaging" "$GITHUB_WORKSPACE/scripts" "$stage_dir/verify/root.x86_64/checks/"
+      - name: Build in Arch Linux
+        run: |
+          sudo "$ARCH_BUILD_ROOT/bin/arch-chroot" -r "$ARCH_BUILD_ROOT" /bin/bash -euo pipefail <<'ARCH'
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm --needed \
+            base-devel git nodejs npm python rust gtk3 webkit2gtk-4.1 libsoup3 polkit xdg-utils
+          useradd --user-group --create-home --shell /bin/bash builder
+          chown -R builder:builder /workspace
+          runuser --user builder -- /bin/bash -euo pipefail <<'BUILD'
+          cd /workspace
+          npm run version:sync
+          npm run test:version
+          npm ci
+          npm run engine:prepare
+          python3 scripts/test-prepare-openocd.py
+          npm test
+          npm run package:arch
+          BUILD
+          ARCH
+      - name: Collect package
+        run: |
+          mkdir -p dist-packages/arch
+          shopt -s nullglob
+          packages=("$ARCH_BUILD_ROOT"/workspace/dist-packages/arch/*.pkg.tar.zst)
+          [[ "${#packages[@]}" -eq 1 ]]
+          cp "${packages[0]}" "${packages[0]}.sha256" dist-packages/arch/
+          sudo mkdir "$ARCH_VERIFY_ROOT/packages"
+          sudo cp "${packages[0]}" "$ARCH_VERIFY_ROOT/packages/"
+      - name: Verify installation in clean Arch Linux
+        run: |
+          sudo "$ARCH_VERIFY_ROOT/bin/arch-chroot" -r "$ARCH_VERIFY_ROOT" /bin/bash -euo pipefail <<'ARCH'
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed python
+          shopt -s nullglob
+          packages=(/packages/*.pkg.tar.zst)
+          [[ "${#packages[@]}" -eq 1 ]]
+          pacman -U --noconfirm "${packages[0]}"
+          pacman -Q flashstudio
+          useradd --user-group --create-home verifier
+          runuser -u verifier -- bash /checks/packaging/linux/verify-install.sh
+          ARCH
+      - name: Upload installable package
+        uses: actions/upload-artifact@v7
+        with:
+          name: flashstudio-arch-x86_64
+          path: dist-packages/arch/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Unmount Arch environments
+        if: always()
+        run: |
+          for arch_root in "${ARCH_BUILD_ROOT:-}" "${ARCH_VERIFY_ROOT:-}"; do
+            if [[ -n "$arch_root" ]] && mountpoint -q "$arch_root"; then
+              sudo umount --recursive "$arch_root"
+            fi
+          done

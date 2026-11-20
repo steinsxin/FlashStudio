@@ -1,4 +1,5 @@
 //! Resolve only application-owned OpenOCD resources, never PATH or user settings.
+use crate::platform;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -44,11 +45,7 @@ pub fn from_root(root: &Path) -> Result<BundledEngine, String> {
     if manifest.platform != platform_id()? {
         return Err("内置引擎与当前系统不匹配，请使用对应平台的安装包".into());
     }
-    let executable = root.join(if cfg!(windows) {
-        "bin/openocd.exe"
-    } else {
-        "bin/openocd"
-    });
+    let executable = root.join(platform::ENGINE_EXECUTABLE);
     let scripts = root.join("openocd/scripts");
     for path in [
         &executable,
@@ -60,17 +57,14 @@ pub fn from_root(root: &Path) -> Result<BundledEngine, String> {
             return Err(missing(path.display().to_string()));
         }
     }
-    let supplied_rules = fs::read(root.join("openocd/contrib/60-openocd.rules")).ok();
-    let installed_rules = fs::read("/etc/udev/rules.d/60-flashstudio.rules").ok();
-    let usb_rules_installed = supplied_rules.is_some() && supplied_rules == installed_rules;
     Ok(BundledEngine {
         executable,
         scripts,
         info: EngineInfo {
             version: manifest.version,
             platform: manifest.platform,
-            can_authorize_usb: cfg!(target_os = "linux"),
-            usb_rules_installed,
+            can_authorize_usb: platform::CAN_AUTHORIZE_USB,
+            usb_rules_installed: platform::usb_rules_installed(root),
         },
     })
 }
@@ -91,7 +85,9 @@ mod tests {
     fn built_executable_resource_layout_is_complete() {
         let root = Path::new(env!("FLASHSTUDIO_BUILD_RESOURCE_DIR"));
         assert!(from_root(&root.join("openocd")).is_ok());
-        assert!(root.join("install-usb-rules.sh").is_file());
+        if platform::CAN_AUTHORIZE_USB {
+            assert!(root.join("install-usb-rules.sh").is_file());
+        }
     }
     #[test]
     fn packaged_engine_runs_without_path_and_resolves_its_own_scripts() {

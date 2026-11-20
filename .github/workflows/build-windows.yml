@@ -1,0 +1,61 @@
+name: Windows installer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Read VERSION and synchronize package metadata
+        run: npm run version:sync
+      - run: npm run test:version
+      - name: Set up native MSVC Rust
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup default stable-x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup component add clippy
+      - run: npm ci
+      - run: npm run engine:prepare
+      - run: python scripts/test-prepare-openocd.py
+      - run: npm test
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Build offline NSIS installer
+        run: npm run package:windows
+      - name: Verify install, bundled engine, startup and uninstall
+        run: |
+          $installers = @(Get-ChildItem dist-packages/windows/*-setup.exe)
+          if ($installers.Count -ne 1) { throw 'Expected one Windows installer.' }
+          ./packaging/windows/verify-install.ps1 -Installer $installers[0].FullName
+      - name: Upload installable package
+        uses: actions/upload-artifact@v7
+        with:
+          name: flashstudio-windows-x64
+          path: dist-packages/windows/*
+          if-no-files-found: error
+          retention-days: 30

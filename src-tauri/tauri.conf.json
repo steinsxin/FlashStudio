@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FlashStudio",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.steinsxin.flashstudio",
   "build": {
     "beforeDevCommand": "npm run engine:prepare && npm run dev",
@@ -26,14 +26,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [],
+    "category": "DeveloperTool",
+    "shortDescription": "STM32 firmware programming with bundled OpenOCD",
     "resources": {
       "resources/openocd/": "openocd/",
-      "../packaging/linux/install-usb-rules.sh": "install-usb-rules.sh"
-    },
-    "windows": {
-      "webviewInstallMode": { "type": "offlineInstaller" },
-      "nsis": { "languages": ["SimpChinese", "English"], "displayLanguageSelector": false }
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },
     "icon": [
       "icons/32x32.png",

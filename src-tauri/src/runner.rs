@@ -3,7 +3,7 @@ use std::{
     io::{BufRead, BufReader, Read},
     process::{Command, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -16,6 +16,35 @@ pub enum Outcome {
     Failed(String),
     Cancelled,
     TimedOut,
+}
+
+#[derive(Default)]
+struct ErrorSummary(Option<String>);
+
+impl ErrorSummary {
+    fn observe(&mut self, line: &str) {
+        let line = line.trim();
+        let explicit = line.strip_prefix("FLASHSTUDIO_ERROR:");
+        let detail = explicit.or_else(|| {
+            line.strip_prefix("Error")
+                .or_else(|| line.strip_prefix("ERROR"))?
+                .trim_start()
+                .strip_prefix(':')
+        });
+        if let Some(detail) = detail.map(str::trim).filter(|text| !text.is_empty())
+            && (explicit.is_some() || self.0.is_none())
+        {
+            // A single bounded reason replaces the former raw log history.
+            let mut chars = detail.chars().filter(|c| !c.is_control());
+            let mut summary: String = chars.by_ref().take(320).collect();
+            if chars.next().is_some() {
+                summary.push('…');
+            }
+            if !summary.is_empty() {
+                self.0 = Some(summary);
+            }
+        }
+    }
 }
 
 fn reader(
@@ -55,19 +84,21 @@ pub fn execute(
     {
         command.current_dir(parent);
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
+    crate::platform::configure_process(&mut command);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
             return Outcome::Failed(format!("无法启动 OpenOCD：{error}。请检查可执行文件路径。"));
         }
     };
-    let stdout = reader(child.stdout.take().unwrap(), output.clone());
-    let stderr = reader(child.stderr.take().unwrap(), output);
+    let error_summary = Arc::new(Mutex::new(ErrorSummary::default()));
+    let capture = error_summary.clone();
+    let on_output = Arc::new(move |line: String| {
+        capture.lock().unwrap().observe(&line);
+        output(line);
+    });
+    let stdout = reader(child.stdout.take().unwrap(), on_output.clone());
+    let stderr = reader(child.stderr.take().unwrap(), on_output);
     let started = Instant::now();
     let result = loop {
         match child.try_wait() {
@@ -76,7 +107,7 @@ pub fn execute(
                     Outcome::Success
                 } else {
                     Outcome::Failed(format!(
-                        "OpenOCD 退出码：{}，请查看运行日志",
+                        "OpenOCD 退出码：{}",
                         status
                             .code()
                             .map(|c| c.to_string())
@@ -105,13 +136,37 @@ pub fn execute(
     };
     let _ = stdout.join();
     let _ = stderr.join();
-    result
+    match result {
+        Outcome::Failed(error) => {
+            let summary = error_summary.lock().unwrap();
+            Outcome::Failed(match &summary.0 {
+                Some(detail) => format!("{error}；{detail}"),
+                None => format!("{error}；请检查探针连接与目标配置"),
+            })
+        }
+        outcome => outcome,
+    }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    #[test]
+    fn error_summary_is_bounded_and_preserves_the_failure_reason() {
+        let mut summary = ErrorSummary::default();
+        summary.observe("Info : ready");
+        summary.observe("FLASHSTUDIO_ERROR: ");
+        assert!(summary.0.is_none());
+        summary.observe("Error : unable to open probe");
+        summary.observe("Error: generic shutdown failure");
+        summary.observe("Info : shutdown requested");
+        assert_eq!(summary.0.as_deref(), Some("unable to open probe"));
+        summary.observe("FLASHSTUDIO_ERROR: verify mismatch");
+        assert_eq!(summary.0.as_deref(), Some("verify mismatch"));
+        summary.observe(&format!("FLASHSTUDIO_ERROR: {}", "错".repeat(1000)));
+        assert_eq!(summary.0.unwrap(), format!("{}…", "错".repeat(320)));
+    }
+    #[cfg(unix)]
     fn plan(script: &str, timeout: u64) -> Plan {
         Plan {
             executable: "/bin/sh".into(),
@@ -119,20 +174,28 @@ mod tests {
             timeout_secs: timeout,
         }
     }
+    #[cfg(unix)]
     #[test]
     fn captures_both_streams_and_nonzero_exit() {
         let lines = Arc::new(Mutex::new(Vec::new()));
         let copy = lines.clone();
         let result = execute(
-            &plan("echo info; echo error >&2; exit 7", 2),
+            &plan(
+                "echo info; echo 'Error: unable to open probe' >&2; echo 'Info : shutdown' >&2; exit 7",
+                2,
+            ),
             Arc::new(AtomicBool::new(false)),
             Arc::new(move |s| copy.lock().unwrap().push(s)),
         );
-        assert!(matches!(result, Outcome::Failed(_)));
+        assert_eq!(
+            result,
+            Outcome::Failed("OpenOCD 退出码：7；unable to open probe".into())
+        );
         let lines = lines.lock().unwrap();
         assert!(lines.contains(&"info".into()));
-        assert!(lines.contains(&"error".into()));
+        assert!(lines.contains(&"Error: unable to open probe".into()));
     }
+    #[cfg(unix)]
     #[test]
     fn timeout_and_cancellation_reap_process() {
         assert_eq!(
@@ -155,6 +218,7 @@ mod tests {
         );
         trigger.join().unwrap();
     }
+    #[cfg(unix)]
     #[test]
     fn missing_executable_and_success() {
         let mut p = plan("exit 0", 1);

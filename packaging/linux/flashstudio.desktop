@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=FlashStudio
+Comment=STM32 firmware programming with bundled OpenOCD
+Comment[zh_CN]=STM32 固件烧录、校验与 Flash 擦除
+Exec=flashstudio
+TryExec=flashstudio
+Icon=flashstudio
+Terminal=false
+Categories=Development;
+Keywords=STM32;OpenOCD;Flash;ST-Link;J-Link;CMSIS-DAP;
+StartupWMClass=FlashStudio
