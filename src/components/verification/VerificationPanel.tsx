@@ -88,8 +88,10 @@ export function VerificationPanel(props: Props) {
           : <button className="primary verification-start" disabled={!props.canStart} onClick={() => { setDismissedJobId(previous?.id ?? null); props.onStart(); }}><Icon name="shield" size={16}/>开始校验</button>}
       </div>
       <div className="verification-progress" role="progressbar" aria-label="校验进度" aria-valuemin={0} aria-valuemax={3} aria-valuenow={completed} aria-valuetext={`${title}，已完成 ${completed} 个阶段，共 3 个阶段`}>
-        {[0, 1, 2].map(index => <span key={index} className={index < completed ? "complete" : running && index === completed ? "active" : ""}/>)}</div>
-      <ol className="verification-steps">{["连接芯片", "对比内容", "完成"].map((label, index) => <li key={label} className={index < completed ? "complete" : running && index === completed ? "active" : ""} aria-current={running && index === completed ? "step" : undefined}><span>{index < completed ? <Icon name="check" size={11}/> : index + 1}</span>{label}</li>)}</ol>
+        <ol className="verification-steps">{["连接芯片", "对比内容", "完成"].map((label, index) => <li key={label} className={index < completed ? "complete" : running && index === completed ? "active" : ""} aria-current={running && index === completed ? "step" : undefined}>
+          <span className="verification-step-node">{index < completed ? <Icon name="check" size={12}/> : index + 1}</span><span className="verification-step-label">{label}</span>
+        </li>)}</ol>
+      </div>
     </div>
   </section>;
 }

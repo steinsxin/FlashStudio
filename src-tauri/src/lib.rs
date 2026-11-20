@@ -1,16 +1,14 @@
 mod bundled;
 mod engine;
+mod firmware;
 mod platform;
 mod runner;
 mod verification;
 
 use engine::{Operation, OperationRequest, Plan};
+use firmware::{FirmwareFiles, FirmwareInfo, FirmwarePurpose};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::{
-    fs,
-    io::Write,
-    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -19,7 +17,6 @@ use std::{
 };
 use tauri::{Emitter, Manager, State};
 
-const MAX_IMAGE: usize = 32 * 1024 * 1024;
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 fn now() -> u64 {
     SystemTime::now()
@@ -34,25 +31,6 @@ fn id() -> String {
         now(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     )
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FirmwareInfo {
-    id: String,
-    name: String,
-    size: usize,
-    format: String,
-    sha256: String,
-}
-struct Firmware {
-    info: FirmwareInfo,
-    path: PathBuf,
-}
-impl Drop for Firmware {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
 }
 
 #[derive(Clone, Serialize)]
@@ -78,7 +56,7 @@ impl Job {
 }
 #[derive(Default)]
 struct Runtime {
-    firmware: Option<Arc<Firmware>>,
+    firmware: FirmwareFiles,
     job: Option<Job>,
     cancel: Option<Arc<AtomicBool>>,
     checking: bool,
@@ -94,63 +72,16 @@ impl Studio {
 
 #[tauri::command]
 async fn import_firmware(
+    purpose: FirmwarePurpose,
     name: String,
     bytes: Vec<u8>,
     studio: State<'_, Studio>,
 ) -> Result<FirmwareInfo, String> {
-    if bytes.is_empty() || bytes.len() > MAX_IMAGE {
-        return Err("固件须非空，且不超过 32 MiB".into());
-    }
-    let format = engine::image_type(&name)?;
     let mut state = studio.0.lock().map_err(|e| e.to_string())?;
     if state.cancel.is_some() || state.checking {
         return Err("任务执行期间不能更换固件".into());
     }
-    let info = FirmwareInfo {
-        id: id(),
-        name,
-        size: bytes.len(),
-        format: format.into(),
-        sha256: format!("{:x}", Sha256::digest(&bytes)),
-    };
-    // A private snapshot cannot change mid-job. The original filename is only
-    // metadata; only our generated basename reaches the filesystem.
-    let path = std::env::temp_dir().join(format!("flashstudio-{}.{}", info.id, format));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(&path)
-        .map_err(|e| format!("无法缓存固件：{e}"))?;
-    if let Err(e) = file.write_all(&bytes) {
-        let _ = fs::remove_file(&path);
-        return Err(e.to_string());
-    }
-    state.firmware = Some(Arc::new(Firmware {
-        info: info.clone(),
-        path,
-    }));
-    Ok(info)
-}
-
-fn plan_for(request: &OperationRequest, runtime: &Runtime) -> Result<Plan, String> {
-    let firmware = if matches!(request.operation, Operation::Flash | Operation::Verify) {
-        let firmware = runtime.firmware.as_ref().ok_or("请先选择固件文件")?;
-        if request.firmware_id.as_deref() != Some(&firmware.info.id) {
-            return Err("固件已变更，请重新选择".into());
-        }
-        if !firmware.path.is_file() {
-            return Err("固件缓存已丢失，请重新选择文件".into());
-        }
-        Some((firmware.path.as_path(), firmware.info.name.as_str()))
-    } else {
-        None
-    };
-    engine::build_plan(request, firmware)
+    state.firmware.import(purpose, name, &bytes)
 }
 
 #[tauri::command]
@@ -170,7 +101,15 @@ fn start_operation(
     if runtime.cancel.is_some() || runtime.checking {
         return Err("已有任务正在执行".into());
     }
-    let plan = plan_for(&request, &runtime)?;
+    let firmware = runtime
+        .firmware
+        .select(request.operation, request.firmware_id.as_deref())?;
+    let plan = engine::build_plan(
+        &request,
+        firmware
+            .as_ref()
+            .map(|f| (f.path.as_path(), f.info.name.as_str())),
+    )?;
     let job = Job {
         id: id(),
         operation: request.operation,
@@ -179,7 +118,7 @@ fn start_operation(
         finished_at: None,
         message: "OpenOCD 正在执行".into(),
         request: request.clone(),
-        firmware: runtime.firmware.as_ref().map(|f| f.info.clone()),
+        firmware: firmware.as_ref().map(|f| f.info.clone()),
         verification_stage: (request.operation == Operation::Verify)
             .then_some(verification::VerificationStage::Connecting),
     };
@@ -188,7 +127,6 @@ fn start_operation(
     runtime.cancel = Some(cancel.clone());
     let shared = studio.inner().clone();
     let job_id = job.id.clone();
-    let firmware = runtime.firmware.clone();
     std::thread::spawn(move || {
         let _firmware = firmware;
         let success_marker = Arc::new(AtomicBool::new(false));
@@ -349,7 +287,7 @@ pub fn run() {
                     api.prevent_close();
                     let _ = window.emit("close-blocked", ());
                 } else if let Ok(mut runtime) = window.state::<Studio>().0.lock() {
-                    runtime.firmware = None;
+                    runtime.firmware = FirmwareFiles::default();
                 }
             }
         })

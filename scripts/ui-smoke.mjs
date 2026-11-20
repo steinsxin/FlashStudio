@@ -34,7 +34,7 @@ function installFixture() {
   let callbacks = 1;
   const handlers = new Map();
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
-  window.__fixture = { job: null, firmware: null, imports: 0, starts: [], reject: false, cancelCount: 0, authorization: 0, denyAuthorization: false, usbRulesInstalled: false };
+  window.__fixture = { job: null, firmware: { flash: null, verify: null }, imports: 0, starts: [], reject: false, rejectImport: false, cancelCount: 0, authorization: 0, denyAuthorization: false, usbRulesInstalled: false };
   window.__TAURI_INTERNALS__ = {
     transformCallback(callback) { const id = callbacks++; handlers.set(id, callback); return id; },
     unregisterCallback(id) { handlers.delete(id); },
@@ -45,12 +45,19 @@ function installFixture() {
       if (command === 'get_job') return f.job ? structuredClone(f.job) : null;
       if (command === 'check_engine') return { version: '0.12.0-7', platform: 'linux-x64', canAuthorizeUsb: true, usbRulesInstalled: f.usbRulesInstalled };
       if (command === 'authorize_usb') { f.authorization++; if (f.denyAuthorization) throw 'USB 授权未完成（已取消）'; f.usbRulesInstalled = true; return 'USB 权限已配置，请重新插拔探针后再检测连接。'; }
-      if (command === 'import_firmware') { f.firmware = { id: `image-${++f.imports}`, name: args.name, format: args.name.endsWith('.hex') ? 'ihex' : 'bin', size: args.bytes.length, sha256: 'a'.repeat(64) }; return f.firmware; }
+      if (command === 'import_firmware') {
+        if (!['flash', 'verify'].includes(args.purpose)) throw 'Invalid firmware purpose';
+        if (f.rejectImport) throw '固件导入失败';
+        f.firmware[args.purpose] = { id: `image-${++f.imports}`, name: args.name, format: args.name.endsWith('.hex') ? 'ihex' : 'bin', size: args.bytes.length, sha256: 'a'.repeat(64) };
+        return f.firmware[args.purpose];
+      }
       if (command === 'start_operation') {
         if (f.reject) throw 'OpenOCD test launch failure';
         if (f.job?.status === 'running') throw '已有任务正在执行';
+        const firmware = ['flash', 'verify'].includes(args.request.operation) ? f.firmware[args.request.operation] : null;
+        if (['flash', 'verify'].includes(args.request.operation) && (!firmware || firmware.id !== args.request.firmwareId)) throw '当前页面未选择匹配的固件';
         f.starts.push(structuredClone(args.request));
-        f.job = { id: `job-${f.starts.length}`, operation: args.request.operation, status: 'running', startedAt: Date.now(), finishedAt: null, request: args.request, firmware: f.firmware,
+        f.job = { id: `job-${f.starts.length}`, operation: args.request.operation, status: 'running', startedAt: Date.now(), finishedAt: null, request: args.request, firmware,
           verificationStage: args.request.operation === 'verify' ? 'connecting' : null,
           message: 'OpenOCD 正在执行' };
         return structuredClone(f.job);
@@ -100,7 +107,37 @@ try {
   await click('取消操作'); await click('继续等待'); assert.equal(await evaluate('window.__fixture.cancelCount'), 0);
   await finish('success', '烧录与校验完成'); await until(`document.body.innerText.includes('固件烧录 · 成功')`);
   await screenshot('desktop-success');
-  await click('固件校验'); await file('application.hex');
+  await click('固件校验');
+  assert.equal(await evaluate(`document.querySelector('.verification-source strong').textContent`), '选择或拖入参考固件');
+  assert.equal(await evaluate(`document.querySelector('.verification-start').disabled`), true);
+  assert.equal(await evaluate(`document.querySelector('[aria-label="校验起始地址"]').value`), '0x08000000');
+  await file('application.hex');
+  await until(`document.querySelector('.verification-source strong').textContent==='application.hex'`);
+  const referenceId = await evaluate(`window.__fixture.firmware.verify.id`);
+  await evaluate(`document.querySelector('.verification-options input[type=checkbox]').click()`);
+  await click('固件烧录');
+  assert.equal(await evaluate(`document.querySelector('.firmware-drop strong').textContent`), 'application.bin');
+  assert.equal(await evaluate(`document.querySelector('[aria-label="BIN 起始地址"]').value`), '0x08004000');
+  assert.equal(await evaluate(`document.querySelectorAll('.write-options input')[1].checked`), true);
+  await file('factory-updated.bin');
+  await until(`document.querySelector('.firmware-drop strong').textContent==='factory-updated.bin'`);
+  await click('开始烧录');
+  await until(`window.__fixture.job.status==='running'`);
+  assert.equal(await evaluate(`window.__fixture.job.firmware.name`), 'factory-updated.bin');
+  assert.equal(await evaluate(`window.__fixture.starts.at(-1).firmwareId === window.__fixture.firmware.flash.id`), true);
+  assert.equal(await evaluate(`window.__fixture.starts.at(-1).verifyAfterWrite`), true);
+  await finish('success', '烧录与校验完成');
+  await until(`document.body.innerText.includes('固件烧录 · 成功')`);
+  await click('固件校验');
+  assert.equal(await evaluate(`document.querySelector('.verification-source strong').textContent`), 'application.hex');
+  assert.equal(await evaluate(`document.querySelector('.verification-options input[type=checkbox]').checked`), false);
+  await evaluate(`document.querySelector('.verification-options input[type=checkbox]').click()`);
+  await evaluate(`window.__fixture.rejectImport=true`);
+  await file('bad-reference.bin');
+  await until(`document.querySelector('[role=alert]')?.textContent.includes('固件导入失败')`);
+  assert.equal(await evaluate(`document.querySelector('.verification-source strong').textContent`), 'application.hex');
+  assert.equal(await evaluate(`window.__fixture.firmware.verify.id`), referenceId);
+  await evaluate(`window.__fixture.rejectImport=false`); await click('关闭提示');
   assert.equal(await evaluate(`document.querySelector('nav [aria-current=page]')?.textContent`), '固件校验');
   assert.equal(await evaluate(`document.querySelector('h1')?.textContent`), '固件校验');
   await until(`document.querySelector('.verification-source strong').textContent==='application.hex'`);
@@ -116,6 +153,8 @@ try {
   await until(`document.querySelector('.verification-probe-status')?.innerText.includes('已取消')`);
   await click('开始校验');
   await until(`document.querySelector('.verification-message').innerText.includes('正在连接目标芯片')`);
+  assert.equal(await evaluate(`window.__fixture.starts.at(-1).firmwareId`), referenceId);
+  assert.equal(await evaluate(`window.__fixture.job.firmware.name`), 'application.hex');
   await delay(750);
   assert.equal(await evaluate(`document.querySelector('[role=progressbar]').getAttribute('aria-valuenow')`), '0');
   assert.equal(await evaluate(`document.querySelector('[aria-label="选择参考固件"]').disabled`), true);
@@ -139,7 +178,13 @@ try {
   assert.equal(await evaluate(`document.querySelector('.verification-result').classList.contains('idle')`), true);
   await input('[aria-label="校验起始地址"]', '0x100000000');
   assert.equal(await evaluate(`document.querySelector('.verification-start').disabled`), true);
-  await input('[aria-label="校验起始地址"]', '0x08004000');
+  await input('[aria-label="校验起始地址"]', '0x08010000');
+  await click('固件烧录');
+  assert.equal(await evaluate(`document.querySelector('.firmware-drop strong').textContent`), 'factory-updated.bin');
+  assert.equal(await evaluate(`document.querySelector('[aria-label="BIN 起始地址"]').value`), '0x08004000');
+  await click('固件校验');
+  assert.equal(await evaluate(`document.querySelector('.verification-source strong').textContent`), 'reference.bin');
+  assert.equal(await evaluate(`document.querySelector('[aria-label="校验起始地址"]').value`), '0x08010000');
   await click('开始校验'); await finish('failed', 'unable to connect');
   await until(`document.querySelector('.verification-result').classList.contains('failed')`);
   assert.equal(await evaluate(`document.querySelector('[role=progressbar]').getAttribute('aria-valuenow')`), '0');
@@ -215,6 +260,10 @@ try {
   assert.equal(await evaluate(`document.querySelector('[aria-label="目标芯片"]').value`), 'target/stm32g4x.cfg');
   assert.equal(await evaluate(`document.documentElement.dataset.theme`), 'dark');
   assert.equal(await evaluate(`document.querySelector('.firmware-drop strong').textContent`), '选择或拖入固件文件');
+  await click('固件校验');
+  assert.equal(await evaluate(`document.querySelector('.verification-source strong').textContent`), '选择或拖入参考固件');
+  assert.equal(await evaluate(`document.querySelector('.verification-start').disabled`), true);
+  await click('固件烧录');
   assert.equal(await evaluate(`localStorage.getItem('flashstudio.records')`), null);
   await cdp('Emulation.setDeviceMetricsOverride', { width: 800, height: 650, deviceScaleFactor: 1, mobile: false });
 
@@ -224,7 +273,7 @@ try {
   assert.equal(await evaluate(`document.querySelector('.execution-row').getBoundingClientRect().bottom <= innerHeight`), true);
   await screenshot('minimum-window');
   assert.deepEqual(errors, []);
-  console.log('PASS: flash/verify/erase, distinct verification layout, engine milestones, terminal results, stale result invalidation, retry/cancellation, connection checks, file import, validation, busy locks, USB authorization, theme and 800px layout.');
+  console.log('PASS: independent flash/verify files and addresses, replacement/import failure isolation, correct task file IDs, flash/verify/erase, milestones, terminal results, retry/cancellation, busy locks, USB authorization, theme and 800px layout.');
 } finally {
   if (fixtureId) await cdp('Page.removeScriptToEvaluateOnNewDocument', { identifier: fixtureId });
   socket.close();

@@ -29,20 +29,21 @@ svg { flex-shrink: 0; }
 fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .muted { font-size: 11px; color: var(--muted); }
-.app-shell { height: 100%; display: grid; grid-template-columns: 184px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
-.sidebar { display: flex; flex-direction: column; min-height: 0; padding: 0 12px; background: var(--sidebar); border-right: 1px solid var(--line); }
-.brand-header { flex-shrink: 0; padding-top: 24px; }
-.brand { display: flex; align-items: center; justify-content: center; gap: 8px; height: 28px; }
-.brand img { height: 28px; width: 28px; }
-.brand strong { font-size: 19px; letter-spacing: -.7px; font-weight: 700; }
+.app-shell { --sidebar-width: 224px; --sidebar-padding: 16px; height: 100%; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.sidebar { display: flex; flex-direction: column; min-height: 0; padding: 0 var(--sidebar-padding); background: var(--sidebar); border-right: 1px solid var(--line); }
+.brand-header { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 26px 8px 22px; border-bottom: 1px solid var(--line); }
+.brand-header>img { height: 38px; width: 38px; flex-shrink: 0; }
+.brand-meta { min-width: 0; }
+.brand { line-height: 24px; white-space: nowrap; }
+.brand strong { font-size: 20px; letter-spacing: -.7px; font-weight: 700; }
 .brand strong span { font-weight: 450; }
-.brand-version { margin-top: 8px; text-align: center; font-size: 11px; line-height: 16px; color: var(--secondary); }
-.sidebar-label { font-size: 10px; color: var(--muted); padding: 21px 12px 12px; }
+.brand-version { display: inline-flex; align-items: center; margin-top: 4px; padding: 1px 6px; border-radius: 4px; font-size: 10px; line-height: 15px; font-variant-numeric: tabular-nums; color: var(--secondary); background: var(--accent-soft); }
+.sidebar-label { font-size: 10px; color: var(--muted); padding: 20px 14px 12px; }
 .sidebar nav { display: flex; flex-direction: column; gap: 6px; }
-.nav-item { position: relative; height: 42px; display: flex; align-items: center; gap: 11px; padding: 0 12px; border-radius: 6px; color: var(--secondary); text-align: left; font-size: 12px; }
+.nav-item { position: relative; height: 44px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-radius: 6px; color: var(--secondary); text-align: left; font-size: 12px; }
 .nav-item:hover:not(:disabled) { background: var(--input); }
 .nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.nav-item.active::before { content: ""; position: absolute; left: -12px; height: 20px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
+.nav-item.active::before { content: ""; position: absolute; left: calc(0px - var(--sidebar-padding)); height: 20px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
 .sidebar-bottom { margin-top: auto; padding-top: 24px; }
 .engine-card { padding: 13px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); }
 .engine-name { display: flex; align-items: center; gap: 7px; color: var(--secondary); }
@@ -142,10 +143,10 @@ dialog::backdrop { background: #14243c66; backdrop-filter: blur(3px); }
 .help-copy ol { padding-left: 20px; }
 .help-copy li { padding-left: 4px; margin-bottom: 9px; }
 @media(max-width:850px) {
-  .app-shell { grid-template-columns: 168px minmax(0, 1fr); }
-  .brand { gap: 6px; }
-  .brand strong { font-size: 18px; }
-  .brand img { width: 25px; height: 25px; }
+  .app-shell { --sidebar-width: 200px; --sidebar-padding: 14px; }
+  .brand-header { gap: 10px; padding-left: 6px; padding-right: 6px; }
+  .brand strong { font-size: 19px; }
+  .brand-header>img { width: 34px; height: 34px; }
   .topbar { padding: 0 18px; }
   main { padding: 18px; }
   .connection-row, .connection-fields { gap: 10px; }
@@ -160,9 +161,7 @@ dialog::backdrop { background: #14243c66; backdrop-filter: blur(3px); }
 }
 @media(max-height:700px) {
   .topbar { height: 64px; }
-  .brand-header { padding-top: 18px; }
-  .brand { height: 25px; }
-  .brand-version { margin-top: 7px; line-height: 14px; }
+  .brand-header { padding-top: 19px; padding-bottom: 18px; }
   main { padding-top: 16px; padding-bottom: 16px; }
   .connection-card { padding-top: 16px; padding-bottom: 16px; }
   .section-heading { margin-bottom: 14px; }

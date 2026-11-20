@@ -4,12 +4,13 @@ import { listen } from "@tauri-apps/api/event";
 import { Icon, type IconName } from "./components/Icon";
 import { VerificationPanel } from "./components/verification/VerificationPanel";
 import appVersion from "../VERSION?raw";
-import { adapters, adapterName, desktop, loadConfig, operationNames, statusNames, targetName, targets, validAddress, validate, type Config, type EngineInfo, type Firmware, type Job, type Operation, type OperationRequest } from "./lib/flash";
+import { adapters, adapterName, desktop, loadConfig, operationNames, statusNames, targetName, targets, validAddress, validate, type Config, type EngineInfo, type Firmware, type FirmwarePurpose, type Job, type Operation, type OperationRequest } from "./lib/flash";
 import "./App.css";
 
 const operationIcons: Record<Operation, IconName> = { probe: "plug", flash: "bolt", verify: "shield", erase: "trash" };
 const operationDescriptions: Record<Operation, string> = { probe: "检测探针与目标芯片的连接", flash: "选择固件，写入目标芯片", verify: "核对参考固件与芯片内容的一致性", erase: "按 Bank 或扇区清除 Flash 内容" };
 const size = (value: number) => value < 1024 ? `${value} B` : `${(value / 1024).toFixed(1)} KiB`;
+interface FirmwareInput { firmware: Firmware | null; address: string; resetAfter: boolean }
 function Modal({ title, children, close }: { title: string; children: ReactNode; close: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => { ref.current?.showModal(); }, []);
@@ -24,10 +25,17 @@ function App() {
   const [config, setConfig] = useState(loadConfig);
   const [customTarget, setCustomTarget] = useState(() => !targets.some(t => t.path === config.target));
   const [operation, setOperation] = useState<Operation>("flash");
-  const [firmware, setFirmware] = useState<Firmware | null>(null);
-  const [address, setAddress] = useState("0x08000000");
+  const [firmwareInputs, setFirmwareInputs] = useState<Record<FirmwarePurpose, FirmwareInput>>({
+    flash: { firmware: null, address: "0x08000000", resetAfter: true },
+    verify: { firmware: null, address: "0x08000000", resetAfter: true },
+  });
+  const purpose: FirmwarePurpose = operation === "verify" ? "verify" : "flash";
+  const { firmware, address, resetAfter } = firmwareInputs[purpose];
+  const updateFirmwareInput = <K extends keyof FirmwareInput>(key: K, value: FirmwareInput[K]) =>
+    setFirmwareInputs(current => ({ ...current, [purpose]: { ...current[purpose], [key]: value } }));
+  const setAddress = (value: string) => updateFirmwareInput("address", value);
+  const setResetAfter = (value: boolean) => updateFirmwareInput("resetAfter", value);
   const [verifyAfterWrite, setVerifyAfterWrite] = useState(true);
-  const [resetAfter, setResetAfter] = useState(true);
   const [bank, setBank] = useState("0");
   const [eraseMode, setEraseMode] = useState("bank");
   const [firstSector, setFirstSector] = useState("0");
@@ -51,7 +59,7 @@ function App() {
   const isRunning = job?.status === "running";
   const busy = pending || hydrating || isRunning;
   const updateConfig = <K extends keyof Config>(key: K, value: Config[K]) => setConfig(current => ({ ...current, [key]: value }));
-  const request: OperationRequest = { config, operation, firmwareId: firmware?.id ?? null, address, verifyAfterWrite, resetAfter,
+  const request: OperationRequest = { config, operation, firmwareId: operation === "erase" ? null : firmware?.id ?? null, address, verifyAfterWrite: operation === "flash" && verifyAfterWrite, resetAfter,
     bank: bank.trim() ? Number(bank) : NaN, firstSector: eraseMode === "bank" ? 0 : firstSector.trim() ? Number(firstSector) : NaN,
     lastSector: eraseMode === "bank" || !lastSector.trim() ? null : Number(lastSector), eraseConfirmed: false };
   const validation = validate(request) || (operation !== "erase" && firmware?.format === "bin" && !validAddress(address) ? "请输入有效的 32 位 BIN 起始地址" : "");
@@ -96,9 +104,9 @@ function App() {
     setCancelling(false);
   }, [job?.id, job?.status]);
   useEffect(() => {
-    if (!isRunning) return;
+    if (!isRunning || job?.operation !== "verify") return;
     const timer = setInterval(() => setTick(Date.now()), 250); return () => clearInterval(timer);
-  }, [isRunning]);
+  }, [isRunning, job?.operation]);
   const work = useCallback(async (action: () => Promise<void>) => {
     if (busyRef.current) return;
     busyRef.current = true; setPending(true); setError(""); setNotice("");
@@ -111,14 +119,18 @@ function App() {
       if (!/\.(bin|hex|ihex|elf|axf)$/i.test(file.name)) throw new Error("请选择 BIN、HEX、ELF 或 AXF 固件");
       if (!file.size || file.size > 32 * 1024 * 1024) throw new Error("固件须非空，且不超过 32 MiB");
       const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-      setFirmware(await invoke<Firmware>("import_firmware", { name: file.name, bytes }));
+      const imported = await invoke<Firmware>("import_firmware", { purpose, name: file.name, bytes });
+      setFirmwareInputs(current => ({ ...current, [purpose]: { ...current[purpose], firmware: imported } }));
     });
   };
   const start = (next: Operation, confirmed = false) => {
     if (busy || !desktop) return;
     setEraseConfirm(false);
     void work(async () => {
-      const nextRequest = { ...request, operation: next, eraseConfirmed: confirmed };
+      const input = next === "flash" || next === "verify" ? firmwareInputs[next] : null;
+      const nextRequest = { ...request, operation: next, firmwareId: input?.firmware?.id ?? null,
+        address: input?.address ?? "0x08000000", resetAfter: input?.resetAfter ?? false,
+        verifyAfterWrite: next === "flash" && verifyAfterWrite, eraseConfirmed: confirmed };
       const problem = validate(nextRequest);
       if (problem) throw new Error(problem);
       setJob(await invoke<Job>("start_operation", { request: nextRequest }));
@@ -137,8 +149,11 @@ function App() {
   return <div className="app-shell" data-operation={operation}>
     <aside className="sidebar">
       <div className="brand-header">
-        <div className="brand"><img src="/flashstudio.svg" alt=""/><strong>Flash<span>Studio</span></strong></div>
-        <div className="brand-version mono" aria-label={`应用版本 ${appVersion.trim()}`}>v{appVersion.trim()}</div>
+        <img src="/flashstudio.svg" alt=""/>
+        <div className="brand-meta">
+          <div className="brand"><strong>Flash<span>Studio</span></strong></div>
+          <span className="brand-version" aria-label={`应用版本 ${appVersion.trim()}`}>v{appVersion.trim()}</span>
+        </div>
       </div>
       <div className="sidebar-label">烧录工具</div>
       <nav aria-label="烧录工具">{(["flash", "verify", "erase"] as const).map(op => <button key={op} disabled={busy} className={`nav-item ${operation === op ? "active" : ""}`} aria-current={operation === op ? "page" : undefined} onClick={() => setOperation(op)}><Icon name={operationIcons[op]} size={18}/><span>{operationNames[op]}</span></button>)}</nav>
@@ -195,7 +210,6 @@ function App() {
         </fieldset>
         <div className="execution-row">
           <div className="execution-status"><span className={`run-icon ${job?.status ?? ""}`}><Icon name={isRunning ? "refresh" : job?.status === "success" ? "check" : job?.status === "failed" ? "info" : "circle"} size={19} className={isRunning ? "spinning" : ""}/></span><div><strong>{isRunning ? `${operationNames[job.operation]}进行中` : job ? `${operationNames[job.operation]} · ${statusNames[job.status]}` : "准备就绪"}</strong><p role="status">{job ? job.message : validation || "可以开始操作"}</p></div></div>
-          {job && <span className="elapsed mono">{duration} s</span>}
           {isRunning ? <button className="danger-outline" disabled={cancelling} onClick={() => setCancelConfirm(true)}><Icon name="pause" size={15}/>{cancelling ? "正在取消…" : "取消操作"}</button> : <button className={operation === "erase" ? "danger" : "primary"} disabled={busy || !desktop || !engine || !!validation} onClick={() => operation === "erase" ? setEraseConfirm(true) : start(operation)}><Icon name={operationIcons[operation]} size={17}/>{pending ? "处理中…" : operation === "flash" ? "开始烧录" : "擦除 Flash"}</button>}
         </div>
         {isRunning && <div className="activity-track" aria-label="OpenOCD 正在执行"><span/></div>}

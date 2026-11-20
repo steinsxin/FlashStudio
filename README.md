@@ -11,8 +11,9 @@
 - 不提供运行日志与导出入口，不缓存逐行日志；界面仅显示操作状态、校验阶段与简短失败原因。
 - 引擎自动就绪，没有 OpenOCD 路径、scripts 路径或环境配置页面。
 - 保留连接参数与主题偏好；每次启动重新选择固件。
+- 烧录与独立校验分别选择固件，各自保留文件、BIN 起始地址和完成后运行选项；切换页面不会自动带入或覆盖另一页的选择。「烧录后校验」始终比较本次烧录的文件。
 
-固件校验页保持统一蓝色调，使用「参考固件 ↔ 芯片内容」的双栏布局，与烧录页区分。独立进度条按内置引擎实际执行的「连接芯片、对比内容、完成」阶段推进，显示耗时与成功、失败或取消结果；不估算字节百分比。切换固件或连接参数后，不沿用上次校验结果。
+固件校验页保持统一蓝色调，使用「参考固件 ↔ 芯片内容」的双栏布局，与烧录页区分。点线式步骤进度按内置引擎实际执行的「连接芯片、对比内容、完成」阶段推进，显示耗时与成功、失败或取消结果；不估算字节百分比。切换固件或连接参数后，不沿用上次校验结果。
 
 支持 BIN、HEX/IHEX、ELF/AXF，最大 32 MiB。BIN 使用明确的起始地址，其他格式使用文件内地址。固件导入后生成临时快照，避免源文件变化影响烧录。指定 Bank 擦除需确认范围；不解除保护、不修改 Option Bytes，不提供芯片调试。
 
@@ -68,7 +69,7 @@ npm run package:linux                  # 按当前 Linux 发行版选择上述�
 npm run package:windows                # 在 Windows x64 构建离线 NSIS 安装程序
 ```
 
-根目录的 `VERSION` 是应用版本的唯一来源，当前为 `1.0.0`。版本使用 `MAJOR.MINOR.PATCH`，三个数字均为 0–65535，不带前导零，以兼容三个平台的包格式。以后发布只需修改此文件；共用打包入口会自动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 Tauri 配置，仅修改应用自身版本，保留第三方依赖锁定版本。界面版本号也读取 `VERSION`，在左侧 Logo 下方居中显示。
+根目录的 `VERSION` 是应用版本的唯一来源，当前为 `1.0.0`。版本使用 `MAJOR.MINOR.PATCH`，三个数字均为 0–65535，不带前导零，以兼容三个平台的包格式。以后发布只需修改此文件；共用打包入口会自动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 Tauri 配置，仅修改应用自身版本，保留第三方依赖锁定版本。界面版本号也读取 `VERSION`，在左侧品牌区的应用名称下方显示。
 
 安装包及同名 `.sha256` 校验文件分别输出到 `dist-packages/arch/`、`dist-packages/ubuntu/` 和 `dist-packages/windows/`，例如 `flashstudio-1.0.0-1-x86_64.pkg.tar.zst`、`FlashStudio_1.0.0_amd64.deb`、`FlashStudio_1.0.0_x64-setup.exe`。各入口检查当前系统、x64 架构和同步后的版本一致性。共用 Tauri 配置不默认选择包类型，请使用上面的平台打包命令。
 
@@ -149,6 +150,7 @@ npm run test:ui
 - `src/components/verification/`：独立校验布局、阶段进度与结果展示。
 - `src-tauri/src/bundled.rs`：内置资源定位，禁止回退系统引擎。
 - `src-tauri/src/engine.rs`：OpenOCD 命令规划与参数校验。
+- `src-tauri/src/firmware.rs`：共用固件快照管理，分别缓存烧录文件和校验参考文件，按任务用途校验文件 ID。
 - `src-tauri/src/verification.rs`：校验阶段标记与状态推进。
 - `src-tauri/src/runner.rs`：共用子进程、错误摘要、取消和超时逻辑。
 - `src-tauri/src/platform/mod.rs`：操作系统共用接口；`linux/` 实现 USB 授权，`windows/` 实现 Windows 进程设置。

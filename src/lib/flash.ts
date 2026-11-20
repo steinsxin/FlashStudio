@@ -3,6 +3,7 @@ import { isTauri } from "@tauri-apps/api/core";
 export const desktop = isTauri();
 export type Adapter = "stlink" | "jlink" | "cmsis-dap";
 export type Operation = "probe" | "flash" | "verify" | "erase";
+export type FirmwarePurpose = "flash" | "verify";
 export type JobStatus = "running" | "success" | "failed" | "cancelled";
 export interface Config {
   adapter: Adapter; transport: "swd" | "jtag";
