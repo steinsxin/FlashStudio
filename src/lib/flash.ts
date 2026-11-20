@@ -19,6 +19,7 @@ export interface Job {
   id: string; operation: Operation; status: JobStatus; startedAt: number; finishedAt: number | null;
   message: string; logs: { sequence: number; time: number; text: string }[]; nextSequence: number;
   plan: Plan; request: OperationRequest; firmware: Firmware | null;
+  verificationStage: "connecting" | "comparing" | "matched" | null;
 }
 export interface EngineInfo { version: string; platform: string; canAuthorizeUsb: boolean; usbRulesInstalled: boolean }
 export const adapters: { id: Adapter; name: string; description: string }[] = [

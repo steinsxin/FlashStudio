@@ -12,6 +12,8 @@
 - 引擎自动就绪，没有 OpenOCD 路径、scripts 路径或环境配置页面。
 - 保留连接参数与主题偏好；每次启动重新选择固件。
 
+固件校验页保持统一蓝色调，使用「参考固件 ↔ 芯片内容」的双栏布局，与烧录页区分。独立进度条按内置引擎实际执行的「连接芯片、对比内容、完成」阶段推进，显示耗时与成功、失败或取消结果；不估算字节百分比。切换固件或连接参数后，不沿用上次校验结果。
+
 支持 BIN、HEX/IHEX、ELF/AXF，最大 32 MiB。BIN 使用明确的起始地址，其他格式使用文件内地址。固件导入后生成临时快照，避免源文件变化影响烧录。指定 Bank 擦除需确认范围；不解除保护、不修改 Option Bytes，不提供芯片调试。
 
 ## 自带引擎与离线使用
@@ -66,7 +68,7 @@ npm run package:linux                  # 按当前 Linux 发行版选择上述�
 npm run package:windows                # 在 Windows x64 构建离线 NSIS 安装程序
 ```
 
-根目录的 `VERSION` 是应用版本的唯一来源，当前为 `1.0.0`。版本使用 `MAJOR.MINOR.PATCH`，三个数字均为 0–65535，不带前导零，以兼容三个平台的包格式。以后发布只需修改此文件；共用打包入口会自动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 Tauri 配置，仅修改应用自身版本，保留第三方依赖锁定版本。界面底部也读取 `VERSION`。
+根目录的 `VERSION` 是应用版本的唯一来源，当前为 `1.0.0`。版本使用 `MAJOR.MINOR.PATCH`，三个数字均为 0–65535，不带前导零，以兼容三个平台的包格式。以后发布只需修改此文件；共用打包入口会自动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 Tauri 配置，仅修改应用自身版本，保留第三方依赖锁定版本。界面版本号也读取 `VERSION`，在左侧 Logo 下方居中显示。
 
 安装包及同名 `.sha256` 校验文件分别输出到 `dist-packages/arch/`、`dist-packages/ubuntu/` 和 `dist-packages/windows/`，例如 `flashstudio-1.0.0-1-x86_64.pkg.tar.zst`、`FlashStudio_1.0.0_amd64.deb`、`FlashStudio_1.0.0_x64-setup.exe`。各入口检查当前系统、x64 架构和同步后的版本一致性。共用 Tauri 配置不默认选择包类型，请使用上面的平台打包命令。
 
@@ -126,6 +128,7 @@ npm run engine:prepare -- --platform win32-x64 --archive C:/path/to/xpack-openoc
 - Windows 恢复干净快照后，在无开发工具、无系统 OpenOCD、已移除 WebView2、断网且未提权的条件下，安装到含中文和空格的目录；安装器离线补齐当前用户的 WebView2，应用启动、内置引擎完整清单、UTF-8、三种探针配置、开始菜单入口和卸载检查通过。
 - Windows 中文安装向导、安装目录选择、桌面快捷方式、烧录/校验/擦除页面及中文固件文件导入已实测。安装器约 287 MiB，包含 WebView2 离线安装文件；本次日志和截图位于本地 `dist-packages/validation/`。
 - 内置引擎命令规划、路径转义、退出码、单独校验、擦除确认、进程取消与超时。
+- 校验阶段标记已使用真实内置引擎的 Tcl 解释器验证，硬件命令由测试替身代替，覆盖连接失败、内容校验失败及校验后复位失败；模拟界面测试覆盖阶段进度、结果失效、重试、取消与明暗主题。
 - 单窗口 UI、无历史和引擎路径输入、高级设置折叠、模拟 USB 授权成功/取消、烧录/校验/擦除流程、800px 最小窗口。
 
 尚需验收：真实 STM32 板卡的烧录、校验和擦除，Linux 真实系统授权窗口，以及 Windows USB 探针驱动兼容性。虚拟机未直通探针；配置解析和界面检查不代表硬件烧录已经通过。其他 Linux 桌面环境和 Windows 版本仍需分别验收。
@@ -143,8 +146,10 @@ npm run test:ui
 ## 主要代码
 
 - `src/App.tsx`：单窗口工作流与高级选项。
+- `src/components/verification/`：独立校验布局、阶段进度与结果展示。
 - `src-tauri/src/bundled.rs`：内置资源定位，禁止回退系统引擎。
 - `src-tauri/src/engine.rs`：OpenOCD 命令规划与参数校验。
+- `src-tauri/src/verification.rs`：校验阶段标记与状态推进。
 - `src-tauri/src/runner.rs`：共用子进程、日志、取消和超时逻辑。
 - `src-tauri/src/platform/mod.rs`：操作系统共用接口；`linux/` 实现 USB 授权，`windows/` 实现 Windows 进程设置。
 - `scripts/prepare-openocd.py`、`packaging/openocd.lock.json`：固定引擎下载与完整性验证。

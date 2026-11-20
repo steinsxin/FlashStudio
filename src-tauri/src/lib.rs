@@ -2,6 +2,7 @@ mod bundled;
 mod engine;
 mod platform;
 mod runner;
+mod verification;
 
 use engine::{Operation, OperationRequest, Plan};
 use serde::Serialize;
@@ -76,9 +77,15 @@ struct Job {
     plan: Plan,
     request: OperationRequest,
     firmware: Option<FirmwareInfo>,
+    verification_stage: Option<verification::VerificationStage>,
 }
 impl Job {
     fn log(&mut self, text: String) {
+        // Keep milestones outside the bounded log buffer so progress survives
+        // polling, UI reloads and verbose target output.
+        if let Some(stage) = self.verification_stage.as_mut() {
+            stage.observe(&text);
+        }
         self.logs.push_back(LogLine {
             sequence: self.next_sequence,
             time: now(),
@@ -197,6 +204,8 @@ fn start_operation(
         plan: plan.clone(),
         request: request.clone(),
         firmware: runtime.firmware.as_ref().map(|f| f.info.clone()),
+        verification_stage: (request.operation == Operation::Verify)
+            .then_some(verification::VerificationStage::Connecting),
     };
     job.log(format!(
         "开始 {:?} · {}",
@@ -229,14 +238,22 @@ fn start_operation(
             }),
         );
         let (status, message) = match result {
-            runner::Outcome::Success if success_marker.load(Ordering::SeqCst) => {
-                ("success", "操作完成".to_string())
-            }
+            runner::Outcome::Success if success_marker.load(Ordering::SeqCst) => (
+                "success",
+                if request.operation == Operation::Verify {
+                    "固件校验通过，目标内容与参考固件一致".to_string()
+                } else {
+                    "操作完成".to_string()
+                },
+            ),
             runner::Outcome::Success => (
                 "failed",
                 "OpenOCD 未返回操作完成标记，请检查配置与日志".into(),
             ),
             runner::Outcome::Failed(error) => ("failed", error),
+            runner::Outcome::Cancelled if request.operation == Operation::Verify => {
+                ("cancelled", "校验任务已取消，可重新开始校验".into())
+            }
             runner::Outcome::Cancelled => (
                 "cancelled",
                 "操作已取消；写入或擦除可能已部分执行，请重新烧录后校验".into(),

@@ -17,6 +17,7 @@ const paths = {
   arrowDown: "M12 3v18m-6-6 6 6 6-6",
   arrowUp: "M12 21V3m-6 6 6-6 6 6",
   arrowRight: "M4 12h16m-6-6 6 6-6 6",
+  compare: "M4 8h16m-4-4 4 4-4 4M20 16H4m4-4-4 4 4 4",
   refresh:
     "M20 7v5h-5 M4 17v-5h5 M6 5a8 8 0 0 1 13 3l1 4M4 12l1 4a8 8 0 0 0 13 3",
   plug: "M8 2v5m8-5v5M6 7h12v4a6 6 0 0 1-12 0V7ZM12 17v5",

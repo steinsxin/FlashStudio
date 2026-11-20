@@ -193,7 +193,13 @@ pub fn build_plan(r: &OperationRequest, firmware: Option<(&Path, &str)>) -> Resu
                 ));
             }
             if r.operation == Operation::Verify || r.verify_after_write {
+                if r.operation == Operation::Verify {
+                    steps.push(format!("echo {}", crate::verification::COMPARING_MARKER));
+                }
                 steps.push(format!("verify_image {file} 0x{address:08x} {kind}"));
+                if r.operation == Operation::Verify {
+                    steps.push(format!("echo {}", crate::verification::MATCHED_MARKER));
+                }
             }
         }
         Operation::Erase => {
@@ -284,6 +290,70 @@ mod tests {
         .unwrap();
         assert!(!p.args.last().unwrap().contains("write_image"));
         assert!(!p.args.last().unwrap().contains("erase"));
+    }
+    #[test]
+    fn verification_milestones_follow_real_tcl_execution_and_failures() {
+        use crate::verification::{COMPARING_MARKER, MATCHED_MARKER, VerificationStage};
+        let engine = crate::bundled::from_root(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/openocd"),
+        )
+        .unwrap();
+        let plan = build_plan(
+            &request(Operation::Verify),
+            Some((Path::new("a.bin"), "a.bin")),
+        )
+        .unwrap();
+        // Only execute the generated operation body. Every hardware command is
+        // replaced before it runs; this exercises the bundled Tcl interpreter.
+        let fixture = "foreach cmd {init reset verify_image} {if {[llength [info commands $cmd]]} {rename $cmd fs_original_$cmd}; proc $cmd {args} {}}";
+        for (failure, comparing, matched) in [
+            ("", true, true),
+            ("proc init {args} {error CONNECTION_FAILED}", false, false),
+            (
+                "proc verify_image {args} {error VERIFY_FAILED}",
+                true,
+                false,
+            ),
+            (
+                "proc reset {mode} {if {$mode eq \"run\"} {error RESET_FAILED}}",
+                true,
+                true,
+            ),
+        ] {
+            let setup = format!("{fixture}; {failure}");
+            let result = std::process::Command::new(&engine.executable)
+                .args(["-c", &setup, "-c", plan.args.last().unwrap()])
+                .output()
+                .unwrap();
+            let output = format!(
+                "{}{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let contains = |marker: &str| output.lines().any(|line| line.trim() == marker);
+            assert_eq!(contains(COMPARING_MARKER), comparing, "{output}");
+            assert_eq!(contains(MATCHED_MARKER), matched, "{output}");
+            assert_eq!(
+                contains("FLASHSTUDIO_SUCCESS"),
+                failure.is_empty(),
+                "{output}"
+            );
+            assert_eq!(result.status.success(), failure.is_empty(), "{output}");
+            let mut stage = VerificationStage::Connecting;
+            for line in output.lines() {
+                stage.observe(line);
+            }
+            assert_eq!(
+                stage,
+                if matched {
+                    VerificationStage::Matched
+                } else if comparing {
+                    VerificationStage::Comparing
+                } else {
+                    VerificationStage::Connecting
+                }
+            );
+        }
     }
     #[test]
     fn erase_is_explicit_and_bounded_to_selected_bank() {
