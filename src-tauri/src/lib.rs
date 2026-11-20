@@ -6,7 +6,7 @@ mod runner;
 mod verification;
 
 use engine::{Operation, OperationRequest, Plan};
-use firmware::{FirmwareFiles, FirmwareInfo, FirmwarePurpose};
+use firmware::{Firmware, FirmwareFiles, FirmwareInfo, ImportMetadata};
 use serde::Serialize;
 use std::{
     sync::{
@@ -59,29 +59,52 @@ struct Runtime {
     firmware: FirmwareFiles,
     job: Option<Job>,
     cancel: Option<Arc<AtomicBool>>,
-    checking: bool,
+    preparing: bool,
 }
 #[derive(Clone, Default)]
 struct Studio(Arc<Mutex<Runtime>>);
 impl Studio {
     fn busy(&self) -> bool {
         let r = self.0.lock().unwrap();
-        r.cancel.is_some() || r.checking
+        r.cancel.is_some() || r.preparing
     }
 }
 
 #[tauri::command]
 async fn import_firmware(
-    purpose: FirmwarePurpose,
-    name: String,
-    bytes: Vec<u8>,
+    request: tauri::ipc::Request<'_>,
     studio: State<'_, Studio>,
 ) -> Result<FirmwareInfo, String> {
-    let mut state = studio.0.lock().map_err(|e| e.to_string())?;
-    if state.cancel.is_some() || state.checking {
-        return Err("任务执行期间不能更换固件".into());
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("固件须使用二进制数据导入".into());
+    };
+    if bytes.is_empty() || bytes.len() > firmware::MAX_IMAGE {
+        return Err("固件须非空，且不超过 32 MiB".into());
     }
-    state.firmware.import(purpose, name, &bytes)
+    let metadata = ImportMetadata::parse(
+        request
+            .headers()
+            .get("x-flashstudio-firmware")
+            .and_then(|value| value.to_str().ok())
+            .ok_or("缺少固件导入信息")?,
+    )?;
+    let bytes = bytes.clone();
+    {
+        let mut state = studio.0.lock().map_err(|e| e.to_string())?;
+        if state.cancel.is_some() || state.preparing {
+            return Err("任务执行期间不能更换固件".into());
+        }
+        state.preparing = true;
+    }
+    // Hash and write off the async/UI threads without holding the state lock:
+    // status polling stays responsive, and only a completed snapshot is installed.
+    let result =
+        tauri::async_runtime::spawn_blocking(move || Firmware::snapshot(metadata.name, &bytes))
+            .await
+            .map_err(|error| format!("固件导入失败：{error}"));
+    let mut state = studio.0.lock().map_err(|e| e.to_string())?;
+    state.preparing = false;
+    Ok(state.firmware.insert(metadata.purpose, result??))
 }
 
 #[tauri::command]
@@ -98,7 +121,7 @@ fn start_operation(
         .ok_or("引擎脚本路径无法识别")?
         .into();
     let mut runtime = studio.0.lock().map_err(|e| e.to_string())?;
-    if runtime.cancel.is_some() || runtime.checking {
+    if runtime.cancel.is_some() || runtime.preparing {
         return Err("已有任务正在执行".into());
     }
     let firmware = runtime
@@ -216,10 +239,10 @@ async fn check_engine(
         if state.cancel.is_some() {
             return Ok(engine.info);
         }
-        if state.checking {
+        if state.preparing {
             return Err("已有任务正在执行".into());
         }
-        state.checking = true;
+        state.preparing = true;
     }
     let result = tauri::async_runtime::spawn_blocking(move || {
         let lines = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -250,7 +273,7 @@ async fn check_engine(
     })
     .await
     .map_err(|e| e.to_string());
-    studio.0.lock().map_err(|e| e.to_string())?.checking = false;
+    studio.0.lock().map_err(|e| e.to_string())?.preparing = false;
     result??;
     Ok(bundled::resolve(&app)?.info)
 }
@@ -264,15 +287,15 @@ async fn authorize_usb(app: tauri::AppHandle, studio: State<'_, Studio>) -> Resu
     let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
     {
         let mut state = studio.0.lock().map_err(|e| e.to_string())?;
-        if state.cancel.is_some() || state.checking {
+        if state.cancel.is_some() || state.preparing {
             return Err("请等待当前任务完成".into());
         }
-        state.checking = true;
+        state.preparing = true;
     }
     let result = tauri::async_runtime::spawn_blocking(move || platform::authorize_usb(&resources))
         .await
         .map_err(|e| e.to_string());
-    studio.0.lock().map_err(|e| e.to_string())?.checking = false;
+    studio.0.lock().map_err(|e| e.to_string())?.preparing = false;
     result?
 }
 

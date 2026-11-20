@@ -3,13 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Icon, type IconName } from "./components/Icon";
 import { VerificationPanel } from "./components/verification/VerificationPanel";
+import { fileSize, importFirmware, importMessage, type FirmwareImportState } from "./lib/firmware";
 import appVersion from "../VERSION?raw";
 import { adapters, adapterName, desktop, loadConfig, operationNames, statusNames, targetName, targets, validAddress, validate, type Config, type EngineInfo, type Firmware, type FirmwarePurpose, type Job, type Operation, type OperationRequest } from "./lib/flash";
 import "./App.css";
 
 const operationIcons: Record<Operation, IconName> = { probe: "plug", flash: "bolt", verify: "shield", erase: "trash" };
 const operationDescriptions: Record<Operation, string> = { probe: "检测探针与目标芯片的连接", flash: "选择固件，写入目标芯片", verify: "核对参考固件与芯片内容的一致性", erase: "按 Bank 或扇区清除 Flash 内容" };
-const size = (value: number) => value < 1024 ? `${value} B` : `${(value / 1024).toFixed(1)} KiB`;
 interface FirmwareInput { firmware: Firmware | null; address: string; resetAfter: boolean }
 function Modal({ title, children, close }: { title: string; children: ReactNode; close: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -42,6 +42,7 @@ function App() {
   const [lastSector, setLastSector] = useState("");
   const [job, setJob] = useState<Job | null>(null);
   const [pending, setPending] = useState(false);
+  const [importing, setImporting] = useState<FirmwareImportState | null>(null);
   const [hydrating, setHydrating] = useState(desktop);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -116,11 +117,10 @@ function App() {
   const importFile = (file: File) => {
     if (busy || !desktop) return;
     void work(async () => {
-      if (!/\.(bin|hex|ihex|elf|axf)$/i.test(file.name)) throw new Error("请选择 BIN、HEX、ELF 或 AXF 固件");
-      if (!file.size || file.size > 32 * 1024 * 1024) throw new Error("固件须非空，且不超过 32 MiB");
-      const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-      const imported = await invoke<Firmware>("import_firmware", { purpose, name: file.name, bytes });
-      setFirmwareInputs(current => ({ ...current, [purpose]: { ...current[purpose], firmware: imported } }));
+      try {
+        const imported = await importFirmware(file, purpose, setImporting);
+        setFirmwareInputs(current => ({ ...current, [purpose]: { ...current[purpose], firmware: imported } }));
+      } finally { setImporting(null); }
     });
   };
   const start = (next: Operation, confirmed = false) => {
@@ -188,16 +188,16 @@ function App() {
         </div>}
         {operation === "verify" && job?.operation === "probe" && <div className="verification-probe-status" role="status"><Icon name={isRunning ? "refresh" : job.status === "success" ? "check" : "info"} size={15} className={isRunning ? "spinning" : ""}/><span>连接检测 · {statusNames[job.status]} · {job.message}</span>{isRunning && <button className="danger-outline small" disabled={cancelling} onClick={() => setCancelConfirm(true)}>{cancelling ? "正在取消…" : "取消检测"}</button>}</div>}
       </section>
-      {operation === "verify" ? <VerificationPanel firmware={firmware} config={config} address={address} resetAfter={resetAfter} job={job} duration={duration}
+      {operation === "verify" ? <VerificationPanel firmware={firmware} importing={importing} config={config} address={address} resetAfter={resetAfter} job={job} duration={duration}
         busy={busy} canImport={!busy && desktop} canStart={!busy && desktop && !!engine && !validation} cancelling={cancelling} validation={validation}
         onImport={importFile} onAddress={setAddress} onResetAfter={setResetAfter} onStart={() => start("verify")} onCancel={() => setCancelConfirm(true)}/>
       : <section className="card firmware-card">
         <div className="section-heading"><h2><Icon name={operation === "erase" ? "trash" : "archive"} size={18}/>{operation === "erase" ? "擦除范围" : "固件文件"}</h2><span className="muted">{operation === "erase" ? "请确认目标区域" : "支持拖放文件"}</span></div>
         <fieldset disabled={busy}>
           {operation !== "erase" ? <>
-            <label className={`firmware-drop ${dragging ? "dragging" : ""} ${firmware ? "has-file" : ""}`} onDragOver={e => { e.preventDefault(); if (!busy && desktop) setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={e => { e.preventDefault(); setDragging(false); const file = e.dataTransfer.files[0]; if (file) importFile(file); }}>
+            <label className={`firmware-drop ${dragging ? "dragging" : ""} ${firmware ? "has-file" : ""} ${importing ? "importing" : ""}`} aria-busy={!!importing} onDragOver={e => { e.preventDefault(); if (!busy && desktop) setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={e => { e.preventDefault(); setDragging(false); const file = e.dataTransfer.files[0]; if (file) importFile(file); }}>
               <input type="file" aria-label="选择固件文件" accept=".bin,.hex,.ihex,.elf,.axf" disabled={busy || !desktop} onChange={e => { const file = e.target.files?.[0]; if (file) importFile(file); e.target.value = ""; }}/>
-              <span className="file-icon"><Icon name={firmware ? "archive" : "download"} size={25}/></span><strong>{firmware?.name ?? "选择或拖入固件文件"}</strong><span>{firmware ? `${size(firmware.size)} · ${firmware.format.toUpperCase()} · 点击更换` : "BIN / HEX / ELF / AXF"}</span>
+              <span className="file-icon"><Icon name={importing ? "refresh" : firmware ? "archive" : "download"} className={importing ? "spinning" : ""} size={25}/></span><strong>{importing?.name ?? firmware?.name ?? "选择或拖入固件文件"}</strong><span>{importing ? `${fileSize(importing.size)} · ${importMessage(importing)}` : firmware ? `${fileSize(firmware.size)} · ${firmware.format.toUpperCase()} · 点击更换` : "BIN / HEX / ELF / AXF"}</span>
             </label>
             <div className="firmware-options"><Field label="烧录地址"><input className="mono" aria-label="BIN 起始地址" value={firmware && firmware.format !== "bin" ? "使用文件内地址" : address} disabled={!!firmware && firmware.format !== "bin"} onChange={e => setAddress(e.target.value)} spellCheck={false}/></Field><div className="write-options"><label className="checkbox"><input type="checkbox" checked={verifyAfterWrite} onChange={e => setVerifyAfterWrite(e.target.checked)}/><span>烧录后校验</span></label><label className="checkbox"><input type="checkbox" checked={resetAfter} onChange={e => setResetAfter(e.target.checked)}/><span>完成后运行</span></label></div></div>
             <p className="footnote">BIN 需确认起始地址；烧录将擦除固件覆盖的扇区。</p>
@@ -209,8 +209,8 @@ function App() {
           </div>}
         </fieldset>
         <div className="execution-row">
-          <div className="execution-status"><span className={`run-icon ${job?.status ?? ""}`}><Icon name={isRunning ? "refresh" : job?.status === "success" ? "check" : job?.status === "failed" ? "info" : "circle"} size={19} className={isRunning ? "spinning" : ""}/></span><div><strong>{isRunning ? `${operationNames[job.operation]}进行中` : job ? `${operationNames[job.operation]} · ${statusNames[job.status]}` : "准备就绪"}</strong><p role="status">{job ? job.message : validation || "可以开始操作"}</p></div></div>
-          {isRunning ? <button className="danger-outline" disabled={cancelling} onClick={() => setCancelConfirm(true)}><Icon name="pause" size={15}/>{cancelling ? "正在取消…" : "取消操作"}</button> : <button className={operation === "erase" ? "danger" : "primary"} disabled={busy || !desktop || !engine || !!validation} onClick={() => operation === "erase" ? setEraseConfirm(true) : start(operation)}><Icon name={operationIcons[operation]} size={17}/>{pending ? "处理中…" : operation === "flash" ? "开始烧录" : "擦除 Flash"}</button>}
+          <div className="execution-status"><span className={`run-icon ${importing ? "running" : job?.status ?? ""}`}><Icon name={importing || isRunning ? "refresh" : job?.status === "success" ? "check" : job?.status === "failed" ? "info" : "circle"} size={19} className={importing || isRunning ? "spinning" : ""}/></span><div><strong>{importing ? "正在导入固件" : isRunning ? `${operationNames[job.operation]}进行中` : job ? `${operationNames[job.operation]} · ${statusNames[job.status]}` : "准备就绪"}</strong><p role="status">{importing ? "请稍候，导入完成后即可操作。" : job ? job.message : validation || "可以开始操作"}</p></div></div>
+          {isRunning ? <button className="danger-outline" disabled={cancelling} onClick={() => setCancelConfirm(true)}><Icon name="pause" size={15}/>{cancelling ? "正在取消…" : "取消操作"}</button> : <button className={operation === "erase" ? "danger" : "primary"} disabled={busy || !desktop || !engine || !!validation} onClick={() => operation === "erase" ? setEraseConfirm(true) : start(operation)}><Icon name={importing ? "refresh" : operationIcons[operation]} className={importing ? "spinning" : ""} size={17}/>{importing ? "正在导入…" : pending ? "处理中…" : operation === "flash" ? "开始烧录" : "擦除 Flash"}</button>}
         </div>
         {isRunning && <div className="activity-track" aria-label="OpenOCD 正在执行"><span/></div>}
       </section>}

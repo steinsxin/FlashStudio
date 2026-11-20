@@ -34,11 +34,18 @@ function installFixture() {
   let callbacks = 1;
   const handlers = new Map();
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
-  window.__fixture = { job: null, firmware: { flash: null, verify: null }, imports: 0, starts: [], reject: false, rejectImport: false, cancelCount: 0, authorization: 0, denyAuthorization: false, usbRulesInstalled: false };
+  window.__fixture = { job: null, firmware: { flash: null, verify: null }, imports: 0, importRequests: 0, starts: [], reject: false, rejectImport: false, holdRead: false, holdImport: false, rejectRead: false, cancelCount: 0, authorization: 0, denyAuthorization: false, usbRulesInstalled: false };
+  const arrayBuffer = File.prototype.arrayBuffer;
+  File.prototype.arrayBuffer = async function () {
+    const f = window.__fixture;
+    if (f.holdRead) await new Promise(resolve => { f.releaseRead = resolve; });
+    if (f.rejectRead) throw new Error('文件读取失败');
+    return arrayBuffer.call(this);
+  };
   window.__TAURI_INTERNALS__ = {
     transformCallback(callback) { const id = callbacks++; handlers.set(id, callback); return id; },
     unregisterCallback(id) { handlers.delete(id); },
-    async invoke(command, args = {}) {
+    async invoke(command, args = {}, options = {}) {
       const f = window.__fixture;
       if (command === 'plugin:event|listen') return 1;
       if (command === 'plugin:event|unlisten') return null;
@@ -46,10 +53,17 @@ function installFixture() {
       if (command === 'check_engine') return { version: '0.12.0-7', platform: 'linux-x64', canAuthorizeUsb: true, usbRulesInstalled: f.usbRulesInstalled };
       if (command === 'authorize_usb') { f.authorization++; if (f.denyAuthorization) throw 'USB 授权未完成（已取消）'; f.usbRulesInstalled = true; return 'USB 权限已配置，请重新插拔探针后再检测连接。'; }
       if (command === 'import_firmware') {
-        if (!['flash', 'verify'].includes(args.purpose)) throw 'Invalid firmware purpose';
+        if (!(args instanceof ArrayBuffer)) throw 'Firmware must use a binary IPC body';
+        const header = new Headers(options.headers).get('x-flashstudio-firmware');
+        if (!header || /[^\x20-\x7e]/.test(header)) throw 'Firmware metadata must be ASCII';
+        const { purpose, name } = JSON.parse(header);
+        if (!['flash', 'verify'].includes(purpose)) throw 'Invalid firmware purpose';
+        f.importRequests++;
+        f.lastImport = { purpose, name, size: args.byteLength };
+        if (f.holdImport) await new Promise(resolve => { f.releaseImport = resolve; });
         if (f.rejectImport) throw '固件导入失败';
-        f.firmware[args.purpose] = { id: `image-${++f.imports}`, name: args.name, format: args.name.endsWith('.hex') ? 'ihex' : 'bin', size: args.bytes.length, sha256: 'a'.repeat(64) };
-        return f.firmware[args.purpose];
+        f.firmware[purpose] = { id: `image-${++f.imports}`, name, format: name.endsWith('.hex') ? 'ihex' : 'bin', size: args.byteLength, sha256: 'a'.repeat(64) };
+        return f.firmware[purpose];
       }
       if (command === 'start_operation') {
         if (f.reject) throw 'OpenOCD test launch failure';
@@ -68,7 +82,7 @@ function installFixture() {
   };
 }
 const finish = async (status, message) => evaluate(`Object.assign(window.__fixture.job,{status:${JSON.stringify(status)},finishedAt:Date.now(),message:${JSON.stringify(message)}})`);
-const file = async (name) => evaluate(`(()=>{const input=document.querySelector('input[type=file]');const files=new DataTransfer();files.items.add(new File([new Uint8Array([1,2,3,4])],${JSON.stringify(name)}));input.files=files.files;input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+const file = async (name, bytes = 4) => evaluate(`(()=>{const input=document.querySelector('input[type=file]');const files=new DataTransfer();files.items.add(new File([new Uint8Array(${bytes})],${JSON.stringify(name)}));input.files=files.files;input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
 let fixtureId;
 try {
   await cdp('Runtime.enable'); await cdp('Page.enable');
@@ -91,8 +105,44 @@ try {
   assert.equal(await evaluate(`!!document.querySelector('.advanced-panel')`), false);
   assert.equal(await evaluate(`document.querySelector('.execution-row').getBoundingClientRect().bottom < innerHeight`), true);
   await screenshot('sidebar-workspace');
+  // Hold the actual read and bridge response independently to exercise both
+  // loading stages, including a maximum-size binary body and Unicode metadata.
+  await evaluate(`Object.assign(window.__fixture,{holdRead:true,holdImport:true})`);
+  await file('完整出厂 固件 🔧.bin', 32 * 1024 * 1024);
+  await until(`document.querySelector('.firmware-drop.importing')?.innerText.includes('正在读取文件') && !!window.__fixture.releaseRead`);
+  assert.equal(await evaluate(`document.querySelector('.firmware-drop').getAttribute('aria-busy')`), 'true');
+  assert.equal(await evaluate(`document.querySelector('input[type=file]').disabled && document.querySelector('.connection-card fieldset').disabled && [...document.querySelectorAll('nav button')].every(e=>e.disabled)`), true);
+  assert.equal(await evaluate(`document.querySelector('.execution-row button').disabled && document.querySelector('.execution-row button').innerText==='正在导入…'`), true);
+  assert.equal(await evaluate(`document.querySelector('.firmware-drop').innerText.includes('32.0 MiB')`), true);
+  await screenshot('import-reading');
+  await evaluate(`window.__fixture.holdRead=false; window.__fixture.releaseRead()`);
+  await until(`document.querySelector('.firmware-drop.importing')?.innerText.includes('正在准备固件') && !!window.__fixture.releaseImport`);
+  assert.deepEqual(await evaluate(`window.__fixture.lastImport`), { purpose: 'flash', name: '完整出厂 固件 🔧.bin', size: 32 * 1024 * 1024 });
+  assert.equal(await evaluate(`window.__fixture.firmware.flash`), null);
+  const importsDuringLoad = await evaluate('window.__fixture.importRequests');
+  await file('duplicate.bin');
+  await evaluate(`(()=>{const files=new DataTransfer();files.items.add(new File([new Uint8Array(4)],'duplicate-drop.bin'));document.querySelector('.firmware-drop').dispatchEvent(new DragEvent('drop',{bubbles:true,dataTransfer:files}));})()`);
+  assert.equal(await evaluate('window.__fixture.importRequests'), importsDuringLoad);
+  await click('切换深色主题');
+  await until(`document.documentElement.dataset.theme==='dark'`);
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 800, height: 650, deviceScaleFactor: 1, mobile: false });
+  assert.equal(await evaluate(`document.querySelector('main').scrollWidth <= document.querySelector('main').clientWidth && document.querySelector('.execution-row').getBoundingClientRect().bottom <= innerHeight`), true);
+  await screenshot('import-preparing-dark');
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1000, height: 760, deviceScaleFactor: 1, mobile: false });
+  await click('切换浅色主题');
+  await evaluate(`window.__fixture.holdImport=false; window.__fixture.releaseImport()`);
+  await until(`document.querySelector('.firmware-drop:not(.importing) strong')?.textContent==='完整出厂 固件 🔧.bin' && !document.querySelector('.execution-row button').disabled`);
+  assert.equal(await evaluate(`document.querySelector('.firmware-drop .spinning')`), null);
+  // A read failure never reaches Rust or discards the previous selection.
+  await evaluate(`window.__fixture.rejectRead=true`);
+  await file('unreadable.bin');
+  await until(`document.querySelector('[role=alert]')?.textContent.includes('文件读取失败')`);
+  assert.equal(await evaluate(`document.querySelector('.firmware-drop strong').textContent`), '完整出厂 固件 🔧.bin');
+  assert.equal(await evaluate(`document.querySelector('.firmware-drop').getAttribute('aria-busy')`), 'false');
+  assert.equal(await evaluate('window.__fixture.importRequests'), importsDuringLoad);
+  await evaluate(`window.__fixture.rejectRead=false`); await click('关闭提示');
   await file('application.bin');
-  await until(`document.querySelector('.firmware-drop strong').textContent==='application.bin'`);
+  await until(`document.querySelector('.firmware-drop:not(.importing) strong')?.textContent==='application.bin'`);
   await input('[aria-label="BIN 起始地址"]', '0x100000000');
   assert.equal(await evaluate(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='开始烧录').disabled`), true);
   await input('[aria-label="BIN 起始地址"]', '0x08004000');
@@ -112,7 +162,7 @@ try {
   assert.equal(await evaluate(`document.querySelector('.verification-start').disabled`), true);
   assert.equal(await evaluate(`document.querySelector('[aria-label="校验起始地址"]').value`), '0x08000000');
   await file('application.hex');
-  await until(`document.querySelector('.verification-source strong').textContent==='application.hex'`);
+  await until(`document.querySelector('.verification-source:not(.importing) strong')?.textContent==='application.hex'`);
   const referenceId = await evaluate(`window.__fixture.firmware.verify.id`);
   await evaluate(`document.querySelector('.verification-options input[type=checkbox]').click()`);
   await click('固件烧录');
@@ -120,7 +170,7 @@ try {
   assert.equal(await evaluate(`document.querySelector('[aria-label="BIN 起始地址"]').value`), '0x08004000');
   assert.equal(await evaluate(`document.querySelectorAll('.write-options input')[1].checked`), true);
   await file('factory-updated.bin');
-  await until(`document.querySelector('.firmware-drop strong').textContent==='factory-updated.bin'`);
+  await until(`document.querySelector('.firmware-drop:not(.importing) strong')?.textContent==='factory-updated.bin'`);
   await click('开始烧录');
   await until(`window.__fixture.job.status==='running'`);
   assert.equal(await evaluate(`window.__fixture.job.firmware.name`), 'factory-updated.bin');
@@ -132,15 +182,22 @@ try {
   assert.equal(await evaluate(`document.querySelector('.verification-source strong').textContent`), 'application.hex');
   assert.equal(await evaluate(`document.querySelector('.verification-options input[type=checkbox]').checked`), false);
   await evaluate(`document.querySelector('.verification-options input[type=checkbox]').click()`);
-  await evaluate(`window.__fixture.rejectImport=true`);
+  await evaluate(`Object.assign(window.__fixture,{rejectImport:true,holdImport:true,releaseImport:null})`);
   await file('bad-reference.bin');
+  await until(`document.querySelector('.verification-source.importing')?.innerText.includes('正在准备固件') && !!window.__fixture.releaseImport`);
+  assert.equal(await evaluate(`document.querySelector('.verification-message').innerText.includes('正在导入参考固件') && document.querySelector('.verification-start').disabled`), true);
+  assert.equal(await evaluate(`window.__fixture.firmware.verify.id`), referenceId);
+  await screenshot('import-reference');
+  await evaluate(`window.__fixture.holdImport=false; window.__fixture.releaseImport()`);
   await until(`document.querySelector('[role=alert]')?.textContent.includes('固件导入失败')`);
   assert.equal(await evaluate(`document.querySelector('.verification-source strong').textContent`), 'application.hex');
+  assert.equal(await evaluate(`document.querySelector('.verification-source').getAttribute('aria-busy')`), 'false');
+  assert.equal(await evaluate(`document.querySelector('.verification-start').disabled`), false);
   assert.equal(await evaluate(`window.__fixture.firmware.verify.id`), referenceId);
   await evaluate(`window.__fixture.rejectImport=false`); await click('关闭提示');
   assert.equal(await evaluate(`document.querySelector('nav [aria-current=page]')?.textContent`), '固件校验');
   assert.equal(await evaluate(`document.querySelector('h1')?.textContent`), '固件校验');
-  await until(`document.querySelector('.verification-source strong').textContent==='application.hex'`);
+  await until(`document.querySelector('.verification-source:not(.importing) strong')?.textContent==='application.hex'`);
   assert.equal(await evaluate(`!!document.querySelector('.firmware-drop')`), false);
   assert.equal(await evaluate(`document.querySelector('[aria-label="校验起始地址"]').disabled`), true);
   assert.equal(await evaluate(`document.querySelector('.verification-result').classList.contains('idle')`), true);
@@ -174,7 +231,7 @@ try {
   await until(`document.querySelector('.verification-result').classList.contains('idle')`);
   await select('[aria-label="目标芯片"]', 'target/stm32g4x.cfg');
   await file('reference.bin');
-  await until(`document.querySelector('.verification-source strong').textContent==='reference.bin'`);
+  await until(`document.querySelector('.verification-source:not(.importing) strong')?.textContent==='reference.bin'`);
   assert.equal(await evaluate(`document.querySelector('.verification-result').classList.contains('idle')`), true);
   await input('[aria-label="校验起始地址"]', '0x100000000');
   assert.equal(await evaluate(`document.querySelector('.verification-start').disabled`), true);
@@ -273,7 +330,7 @@ try {
   assert.equal(await evaluate(`document.querySelector('.execution-row').getBoundingClientRect().bottom <= innerHeight`), true);
   await screenshot('minimum-window');
   assert.deepEqual(errors, []);
-  console.log('PASS: independent flash/verify files and addresses, replacement/import failure isolation, correct task file IDs, flash/verify/erase, milestones, terminal results, retry/cancellation, busy locks, USB authorization, theme and 800px layout.');
+  console.log('PASS: 32 MiB binary imports, Unicode filenames, visible read/prepare stages, duplicate prevention and import/read failure recovery; independent flash/verify files and addresses, correct task file IDs, flash/verify/erase, milestones, terminal results, retry/cancellation, busy locks, USB authorization, theme and 800px layout.');
 } finally {
   if (fixtureId) await cdp('Page.removeScriptToEvaluateOnNewDocument', { identifier: fixtureId });
   socket.close();

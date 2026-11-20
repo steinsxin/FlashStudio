@@ -4,13 +4,28 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs, io::Write, path::PathBuf, sync::Arc};
 
-const MAX_IMAGE: usize = 32 * 1024 * 1024;
+pub const MAX_IMAGE: usize = 32 * 1024 * 1024;
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FirmwarePurpose {
     Flash,
     Verify,
+}
+
+#[derive(Deserialize)]
+pub struct ImportMetadata {
+    pub purpose: FirmwarePurpose,
+    pub name: String,
+}
+
+impl ImportMetadata {
+    pub fn parse(header: &str) -> Result<Self, String> {
+        if header.len() > 8192 {
+            return Err("固件文件名过长".into());
+        }
+        serde_json::from_str(header).map_err(|_| "固件导入信息无效".into())
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -29,7 +44,7 @@ pub struct Firmware {
 }
 
 impl Firmware {
-    fn snapshot(name: String, bytes: &[u8]) -> Result<Self, String> {
+    pub fn snapshot(name: String, bytes: &[u8]) -> Result<Self, String> {
         if bytes.is_empty() || bytes.len() > MAX_IMAGE {
             return Err("固件须非空，且不超过 32 MiB".into());
         }
@@ -77,20 +92,25 @@ pub struct FirmwareFiles {
 }
 
 impl FirmwareFiles {
+    #[cfg(test)]
     pub fn import(
         &mut self,
         purpose: FirmwarePurpose,
         name: String,
         bytes: &[u8],
     ) -> Result<FirmwareInfo, String> {
-        let firmware = Arc::new(Firmware::snapshot(name, bytes)?);
+        Ok(self.insert(purpose, Firmware::snapshot(name, bytes)?))
+    }
+
+    pub fn insert(&mut self, purpose: FirmwarePurpose, firmware: Firmware) -> FirmwareInfo {
+        let firmware = Arc::new(firmware);
         let info = firmware.info.clone();
         let slot = match purpose {
             FirmwarePurpose::Flash => &mut self.flash,
             FirmwarePurpose::Verify => &mut self.verify,
         };
         *slot = Some(firmware);
-        Ok(info)
+        info
     }
 
     pub fn select(
@@ -116,6 +136,40 @@ impl FirmwareFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_metadata_preserves_unicode_and_spaces() {
+        let metadata =
+            ImportMetadata::parse(r#"{"purpose":"verify","name":"\u56fa\u4ef6 \ud83d\udd27.bin"}"#)
+                .unwrap();
+        assert!(matches!(metadata.purpose, FirmwarePurpose::Verify));
+        assert_eq!(metadata.name, "固件 🔧.bin");
+        for invalid in [
+            "{}",
+            r#"{"purpose":"erase","name":"a.bin"}"#,
+            r#"{"purpose":"flash","name":null}"#,
+            "not json",
+        ] {
+            assert!(ImportMetadata::parse(invalid).is_err());
+        }
+        assert!(ImportMetadata::parse(&" ".repeat(8193)).is_err());
+    }
+
+    #[test]
+    fn maximum_size_snapshot_preserves_binary_and_cleans_up() {
+        let bytes: Vec<u8> = (0..MAX_IMAGE).map(|i| (i % 251) as u8).collect();
+        let firmware = Firmware::snapshot("完整出厂 固件.bin".into(), &bytes).unwrap();
+        assert_eq!(firmware.info.size, MAX_IMAGE);
+        assert_eq!(
+            firmware.info.sha256,
+            format!("{:x}", Sha256::digest(&bytes))
+        );
+        assert_eq!(fs::read(&firmware.path).unwrap(), bytes);
+        let path = firmware.path.clone();
+        drop(firmware);
+        assert!(!path.exists());
+        assert!(Firmware::snapshot("too-large.bin".into(), &vec![0; MAX_IMAGE + 1]).is_err());
+    }
 
     #[test]
     fn selections_are_independent_and_reject_other_pages_file_ids() {
