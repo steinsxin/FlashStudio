@@ -1,0 +1,17 @@
+{
+  "bundle": {
+    "targets": ["deb"],
+    "resources": { "../packaging/linux/install-usb-rules.sh": "install-usb-rules.sh" },
+    "linux": {
+      "deb": {
+        "depends": ["pkexec", "udev", "xdg-utils"],
+        "section": "utils",
+        "desktopTemplate": "../packaging/linux/flashstudio.desktop",
+        "files": {
+          "/usr/share/doc/flashstudio/README.md": "../README.md",
+          "/usr/share/doc/flashstudio/THIRD_PARTY_NOTICES.md": "../THIRD_PARTY_NOTICES.md"
+        }
+      }
+    }
+  }
+}

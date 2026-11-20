@@ -55,11 +55,7 @@ pub fn execute(
     {
         command.current_dir(parent);
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
+    crate::platform::configure_process(&mut command);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {

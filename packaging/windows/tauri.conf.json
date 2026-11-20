@@ -1,0 +1,16 @@
+{
+  "bundle": {
+    "targets": ["nsis"],
+    "windows": {
+      "webviewInstallMode": { "type": "offlineInstaller" },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": true,
+        "startMenuFolder": "FlashStudio",
+        "compression": "lzma",
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  }
+}

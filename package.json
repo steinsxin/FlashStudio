@@ -11,8 +11,11 @@
     "test": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
     "test:ui": "node scripts/ui-smoke.mjs",
     "engine:prepare": "node scripts/prepare-openocd.mjs",
-    "package:linux": "tauri build --bundles appimage -- --locked",
-    "package:windows": "tauri build --bundles nsis -- --locked"
+    "package:linux": "node packaging/linux/build.mjs",
+    "package:arch": "node packaging/linux/arch/build.mjs",
+    "package:ubuntu": "node packaging/linux/ubuntu/build.mjs",
+    "package:deb": "npm run package:ubuntu",
+    "package:windows": "node packaging/windows/build.mjs"
   },
   "dependencies": {
     "react": "^19.1.0",

@@ -1,5 +1,6 @@
 mod bundled;
 mod engine;
+mod platform;
 mod runner;
 
 use engine::{Operation, OperationRequest, Plan};
@@ -330,18 +331,11 @@ async fn check_engine(
 
 #[tauri::command]
 async fn authorize_usb(app: tauri::AppHandle, studio: State<'_, Studio>) -> Result<String, String> {
-    if !cfg!(target_os = "linux") {
+    if !platform::CAN_AUTHORIZE_USB {
         return Err("此功能仅用于 Linux USB 权限配置".into());
     }
     bundled::resolve(&app)?;
-    let helper = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?
-        .join("install-usb-rules.sh");
-    if !helper.is_file() {
-        return Err("USB 授权组件缺失，请重新安装".into());
-    }
+    let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
     {
         let mut state = studio.0.lock().map_err(|e| e.to_string())?;
         if state.cancel.is_some() || state.checking {
@@ -349,21 +343,9 @@ async fn authorize_usb(app: tauri::AppHandle, studio: State<'_, Studio>) -> Resu
         }
         state.checking = true;
     }
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        let output = std::process::Command::new("/usr/bin/pkexec")
-            .args(["/bin/sh", helper.to_str().ok_or("授权组件路径无效")?])
-            .output()
-            .map_err(|e| format!("无法打开系统授权窗口：{e}。系统需要提供 polkit / pkexec。"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "USB 授权未完成（已取消或系统拒绝）：{}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        Ok("USB 权限已配置，请重新插拔探针后再检测连接。".to_string())
-    })
-    .await
-    .map_err(|e| e.to_string());
+    let result = tauri::async_runtime::spawn_blocking(move || platform::authorize_usb(&resources))
+        .await
+        .map_err(|e| e.to_string());
     studio.0.lock().map_err(|e| e.to_string())?.checking = false;
     result?
 }
