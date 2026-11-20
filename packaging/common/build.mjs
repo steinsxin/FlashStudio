@@ -3,9 +3,9 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { root, syncVersion } from './version.mjs';
 
-export const root = fileURLToPath(new URL('../../', import.meta.url));
+export { root };
 export const readJson = path => JSON.parse(readFileSync(path, 'utf8'));
 export function run(command, args, options = {}) {
   const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', windowsHide: true, ...options });
@@ -21,13 +21,12 @@ export function context(platform) {
     if (id !== platform) throw new Error(`Build ${platform} on ${platform}, not ${id}.`);
   }
   if (!existsSync(join(root, 'node_modules/@tauri-apps/cli/tauri.js'))) throw new Error('Run npm ci first.');
+  const version = syncVersion();
   const config = readJson(join(root, 'src-tauri/tauri.conf.json'));
   const metadata = JSON.parse(run('cargo', ['metadata', '--manifest-path', 'src-tauri/Cargo.toml', '--no-deps', '--format-version', '1', '--locked'], { stdio: 'pipe' }));
-  const version = config.version;
-  if (readJson(join(root, 'package.json')).version !== version || metadata.packages.find(p => p.name === 'flashstudio')?.version !== version) {
-    throw new Error('package.json, Cargo.toml and tauri.conf.json must have the same version.');
+  if (config.version !== version || readJson(join(root, 'package.json')).version !== version || metadata.packages.find(p => p.name === 'flashstudio')?.version !== version) {
+    throw new Error('Synchronized package metadata does not match VERSION.');
   }
-  if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) throw new Error(`Unsupported version: ${version}`);
   const target = os === 'win32' ? 'x86_64-pc-windows-msvc' : 'x86_64-unknown-linux-gnu';
   const host = run('rustc', ['-vV'], { stdio: 'pipe' }).match(/^host: (.+)$/m)?.[1];
   if (host !== target) throw new Error(`Expected native Rust target ${target}, got ${host}.`);

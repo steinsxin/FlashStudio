@@ -28,7 +28,9 @@
 
 Windows 安装器支持中文/英文、选择安装目录、开始菜单与桌面快捷方式，并注册系统卸载入口。默认安装给当前用户，主程序不要求管理员身份。WebView2 使用 `offlineInstaller`：在构建机下载并放入安装器，安装者无需联网下载运行库。平台配置在 `packaging/windows/tauri.conf.json`，采用 [Tauri NSIS 安装向导](https://v2.tauri.app/distribute/windows-installer/)。
 
-Windows 构建入口还启用当前锁定 Tauri 版本的静态 Visual C++ runtime 链接；安装检查会用 `dumpbin` 核对主程序没有额外的 VC runtime DLL 依赖，避免构建机预装的运行库掩盖缺项。
+Windows 构建入口还启用当前锁定 Tauri 版本的静态 Visual C++ runtime 链接；构建检查会用 `dumpbin` 核对主程序没有额外的 VC runtime DLL 依赖，避免构建机预装的运行库掩盖缺项。安装检查只使用 Windows 自带的 PowerShell，不依赖 Python 或 Visual Studio。
+
+Windows 引擎附带 `openocd.exe.manifest`，使进程使用 UTF-8，支持中文路径和输出；上游可执行文件保持原样。该清单与 DLL、脚本一起打包并校验，缺少它的旧缓存会自动重建。此 UTF-8 机制要求 Windows 10 1903 或更新版本。
 
 安装方式：Arch 使用 `sudo pacman -U ./flashstudio-*.pkg.tar.zst`，Ubuntu 使用 `sudo apt install ./FlashStudio_*.deb`，Windows 双击 `FlashStudio_*-setup.exe` 按向导安装。
 
@@ -43,6 +45,7 @@ Windows 构建入口还启用当前锁定 Tauri 版本的静态 Visual C++ runti
 
 ```bash
 cd FlashStudio
+npm run version:sync
 npm ci
 npm run tauri dev
 ```
@@ -50,6 +53,8 @@ npm run tauri dev
 开发/打包命令会先准备对应平台的内置引擎。首次需要联网下载约 3 MB；准备好的引擎和缓存可供后续离线构建。生成资源不提交到 Git，以固定来源和校验值重建。
 
 ```bash
+npm run version:sync                   # 从 VERSION 同步 npm / Cargo / Tauri 元数据
+npm run test:version                   # 版本同步、锁文件及 Windows 换行检查
 npm run engine:prepare                 # 准备并校验当前平台引擎
 npm run build                          # 前端构建
 npm test                               # Rust 与真实内置引擎的无硬件测试
@@ -61,7 +66,9 @@ npm run package:linux                  # 按当前 Linux 发行版选择上述�
 npm run package:windows                # 在 Windows x64 构建离线 NSIS 安装程序
 ```
 
-安装包及同名 `.sha256` 校验文件分别输出到 `dist-packages/arch/`、`dist-packages/ubuntu/` 和 `dist-packages/windows/`。各入口检查当前系统、x64 架构以及 npm / Cargo / Tauri 三处版本一致性。共用 Tauri 配置不默认选择包类型，请使用上面的平台打包命令。
+根目录的 `VERSION` 是应用版本的唯一来源，当前为 `1.0.0`。版本使用 `MAJOR.MINOR.PATCH`，三个数字均为 0–65535，不带前导零，以兼容三个平台的包格式。以后发布只需修改此文件；共用打包入口会自动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 和 Tauri 配置，仅修改应用自身版本，保留第三方依赖锁定版本。界面底部也读取 `VERSION`。
+
+安装包及同名 `.sha256` 校验文件分别输出到 `dist-packages/arch/`、`dist-packages/ubuntu/` 和 `dist-packages/windows/`，例如 `flashstudio-1.0.0-1-x86_64.pkg.tar.zst`、`FlashStudio_1.0.0_amd64.deb`、`FlashStudio_1.0.0_x64-setup.exe`。各入口检查当前系统、x64 架构和同步后的版本一致性。共用 Tauri 配置不默认选择包类型，请使用上面的平台打包命令。
 
 两个 Linux 包共用 `/usr/lib/FlashStudio/` 资源目录，与 Tauri 的 `productName` 大小写一致；入口为 `/usr/bin/flashstudio`。Windows 资源放在安装目录内。包管理器中的名称分别是 Arch 的 `flashstudio`、Ubuntu 的 `flash-studio`。
 
@@ -91,7 +98,7 @@ npm run engine:prepare -- --platform win32-x64 --archive C:/path/to/xpack-openoc
 
 ### GitHub Actions
 
-三个独立工作流都在 **推送 main** 时触发，也支持 `workflow_dispatch` 手动运行。同一分支有新提交时取消旧任务，安装包和 SHA-256 作为 Actions artifacts 保留 30 天，不自动发布 Release。
+三个独立工作流都在 **推送 main** 时触发，也支持 `workflow_dispatch` 手动运行；都先调用共用的 `version:sync` 读取该次提交中的 `VERSION`，再安装依赖、测试和打包。同一分支有新提交时取消旧任务，安装包和 SHA-256 作为 Actions artifacts 保留 30 天，不自动发布 Release。
 
 | 工作流 | 构建与安装检查 | Artifact |
 | --- | --- | --- |
@@ -101,6 +108,12 @@ npm run engine:prepare -- --platform win32-x64 --archive C:/path/to/xpack-openoc
 
 安装检查会核对完整引擎清单，并在空 PATH 下解析 ST-Link、J-Link、CMSIS-DAP 配置，不访问真实探针。Linux 以普通用户执行检查，Windows 验证实际安装目录中的 DLL 与脚本；Windows runner 已带 WebView2，因此其测试不能替代无 WebView2 机器上的首次安装验收。
 
+在独立 Windows 测试机上，把安装器和 `packaging/windows/verify-*.ps1`、`packaging/openocd.lock.json` 按原目录结构复制过去，再运行以下命令。测试会安装到带空格的目录、启动应用并卸载，发现已有 FlashStudio 安装时会拒绝覆盖。
+
+```powershell
+./packaging/windows/verify-install.ps1 -Installer ./FlashStudio_1.0.0_x64-setup.exe -TestRoot C:\FlashStudio-validation\install-test
+```
+
 ## 验证范围
 
 已经验证：
@@ -108,10 +121,14 @@ npm run engine:prepare -- --platform win32-x64 --archive C:/path/to/xpack-openoc
 - Windows/Linux 便携发布包下载、SHA-256、目录结构与库文件。
 - Linux 引擎在干净 Ubuntu 22.04 容器中，以普通用户、空 PATH、无网络运行，解析三种探针配置；容器中没有安装系统 OpenOCD。
 - Arch `.pkg.tar.zst` 与 Ubuntu 24.04 `.deb` 已实际构建，并在各自干净容器中安装；以普通用户核对桌面入口、运行库、资源目录，以及内置引擎的完整清单和三种探针配置。Arch 官方 Docker 镜像的文档裁剪规则在本地测试中关闭，工作流使用标准 bootstrap 环境。
+- Ubuntu 24.04.4 实机已安装 `.deb`，在 GNOME X11 桌面启动，内置引擎就绪，烧录/校验/擦除页面正常显示；安装目录中的引擎清单和三种探针配置检查通过。
+- Windows 11 Enterprise LTSC 2024（build 26100）KVM 虚拟机已原生构建 NSIS 安装器：4 项引擎打包测试、12 项 Rust 测试、Clippy 和静态 VC runtime 检查通过。
+- Windows 恢复干净快照后，在无开发工具、无系统 OpenOCD、已移除 WebView2、断网且未提权的条件下，安装到含中文和空格的目录；安装器离线补齐当前用户的 WebView2，应用启动、内置引擎完整清单、UTF-8、三种探针配置、开始菜单入口和卸载检查通过。
+- Windows 中文安装向导、安装目录选择、桌面快捷方式、烧录/校验/擦除页面及中文固件文件导入已实测。安装器约 287 MiB，包含 WebView2 离线安装文件；本次日志和截图位于本地 `dist-packages/validation/`。
 - 内置引擎命令规划、路径转义、退出码、单独校验、擦除确认、进程取消与超时。
 - 单窗口 UI、无历史和引擎路径输入、高级设置折叠、模拟 USB 授权成功/取消、烧录/校验/擦除流程、800px 最小窗口。
 
-尚需验收：真实 STM32 板卡烧录、真实系统授权窗口、Windows 安装/卸载与驱动兼容性，以及目标桌面上的完整 GUI 流程。Windows 流程已配置原生 runner 测试，本机未执行；Linux 容器验证了安装依赖和内置引擎，不等于所有桌面环境均已通过 GUI 验收。
+尚需验收：真实 STM32 板卡的烧录、校验和擦除，Linux 真实系统授权窗口，以及 Windows USB 探针驱动兼容性。虚拟机未直通探针；配置解析和界面检查不代表硬件烧录已经通过。其他 Linux 桌面环境和 Windows 版本仍需分别验收。
 
 UI 测试需要启动专用 Vite 与隔离 Chrome：
 
@@ -132,6 +149,7 @@ npm run test:ui
 - `src-tauri/src/platform/mod.rs`：操作系统共用接口；`linux/` 实现 USB 授权，`windows/` 实现 Windows 进程设置。
 - `scripts/prepare-openocd.py`、`packaging/openocd.lock.json`：固定引擎下载与完整性验证。
 - `packaging/common/`：共用构建接口、版本与架构检查、产物校验、已安装引擎验证。
+- `VERSION`、`packaging/common/version.mjs`：应用版本唯一来源及三端共用的元数据同步。
 - `packaging/linux/`：Linux 共用桌面入口、权限助手、安装检查；`arch/`、`ubuntu/` 分别处理包格式与依赖。
 - `packaging/windows/`：NSIS 配置、构建与安装/卸载检查。
 - `packaging/linux/install-usb-rules.sh`：用户授权后的 USB 权限配置。

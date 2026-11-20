@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Icon, type IconName } from "./components/Icon";
+import appVersion from "../VERSION?raw";
 import { adapters, adapterName, desktop, download, loadConfig, operationNames, planText, statusNames, targetName, targets, validAddress, validate, type Config, type EngineInfo, type Firmware, type Job, type Operation, type OperationRequest } from "./lib/flash";
 import "./App.css";
 
@@ -206,7 +207,7 @@ function App() {
       </section>
     </main>
     </div>
-    <footer className="statusbar"><span>{adapterName(config.adapter)} · {config.transport.toUpperCase()} · {targetName(config.target) || "请选择芯片"}</span><span>FlashStudio 0.1.0</span></footer>
+    <footer className="statusbar"><span>{adapterName(config.adapter)} · {config.transport.toUpperCase()} · {targetName(config.target) || "请选择芯片"}</span><span>FlashStudio {appVersion.trim()}</span></footer>
     {eraseConfirm && <Modal title="确认擦除 Flash" close={() => setEraseConfirm(false)}><div className="modal-copy"><p>{targetName(config.target)} · {adapterName(config.adapter)}{config.serial ? ` · ${config.serial}` : ""}</p><div className="confirm-range mono">{eraseRange}</div><p>此范围内的固件和数据将被清除，无法撤销。擦除后芯片保持暂停。</p></div><div className="modal-actions"><button autoFocus className="secondary" onClick={() => setEraseConfirm(false)}>返回检查</button><button className="danger" onClick={() => start("erase", true)}>确认擦除</button></div></Modal>}
     {cancelConfirm && <Modal title="取消当前操作" close={() => setCancelConfirm(false)}><div className="modal-copy"><p>已写入或擦除的数据无法回滚，取消后请重新烧录并校验。</p></div><div className="modal-actions"><button autoFocus className="secondary" onClick={() => setCancelConfirm(false)}>继续等待</button><button className="danger" onClick={() => { setCancelConfirm(false); setCancelling(true); void invoke("cancel_operation", { jobId: job!.id }).catch(e => { setCancelling(false); setError(String(e)); }); }}>确认取消</button></div></Modal>}
     {help && <Modal title="使用说明" close={() => setHelp(false)}><div className="modal-copy help-copy"><ol><li>为目标板供电，连接探针，选择对应芯片。</li><li>选择固件；BIN 按实际内存布局填写起始地址。</li><li>点击开始烧录，等待校验完成。</li></ol><p>软件已自带 OpenOCD，无需另外安装或配置路径。</p>{engine?.canAuthorizeUsb ? <><p>Linux 提示 USB 权限不足时，点击下方按钮，经系统授权后安装权限规则，再重新插拔探针。</p><button className="secondary" disabled={busy} onClick={authorize}><Icon name="shield" size={16}/>授权访问探针</button>{notice && <p className="success-text" role="status">{notice}</p>}{error && <p className="warning" role="alert">{error}</p>}</> : <p>Windows 的 USB 探针需要兼容驱动；无法连接时请检查驱动、目标板供电与接线。</p>}<p>检测连接会复位芯片。复位下连接需 NRST，可在高级设置中启用。</p><small className="muted">内置 OpenOCD {engine?.version ?? "0.12.0-7"} · 单次任务日志，关闭应用后不保留</small></div></Modal>}

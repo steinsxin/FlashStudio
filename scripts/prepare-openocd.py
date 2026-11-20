@@ -18,8 +18,9 @@ import urllib.request
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-LOCK = json.loads((ROOT / "packaging/openocd.lock.json").read_text())
+LOCK = json.loads((ROOT / "packaging/openocd.lock.json").read_text(encoding="utf-8"))
 DEST = ROOT / "src-tauri/resources/openocd"
+WINDOWS_MANIFEST = ROOT / "packaging/windows/openocd.exe.manifest"
 
 
 def default_platform():
@@ -85,8 +86,12 @@ def extract(archive, destination):
 
 def verify_tree(root, platform_id, sha256):
     try:
-        manifest = json.loads((root / "manifest.json").read_text())
+        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
         if manifest["platform"] != platform_id or manifest["archiveSha256"] != sha256 or manifest["version"] != LOCK["version"]:
+            return False
+        # An older, otherwise intact Windows cache still lacks UTF-8 support.
+        # Compare with the current compatibility manifest before accepting it.
+        if platform_id == "win32-x64" and (root / "bin/openocd.exe.manifest").read_bytes() != WINDOWS_MANIFEST.read_bytes():
             return False
         inventory = manifest["files"]
         expected = set(inventory) | {"manifest.json"}
@@ -127,13 +132,17 @@ def prepare(platform_id, archive=None, destination=DEST):
         stage = Path(stage)
         stage.chmod(0o755)
         extract(archive, stage)
+        if platform_id == "win32-x64":
+            # Keep the upstream executable unchanged. Windows loads this
+            # sidecar on first launch, so ANSI APIs and argv use UTF-8 too.
+            shutil.copyfile(WINDOWS_MANIFEST, stage / "bin/openocd.exe.manifest")
         executable = "bin/openocd.exe" if platform_id == "win32-x64" else "bin/openocd"
         for required in (executable, "openocd/scripts/interface/stlink.cfg", "openocd/scripts/interface/jlink.cfg", "openocd/scripts/interface/cmsis-dap.cfg", "openocd/contrib/60-openocd.rules", "distro-info/licenses/openocd-0.12.0/COPYING"):
             if not (stage / required).is_file():
                 raise ValueError(f"Incomplete OpenOCD package: {required}")
         manifest = {"platform": platform_id, "version": LOCK["version"], "source": spec["url"], "archiveSha256": spec["sha256"],
                     "files": {p.relative_to(stage).as_posix(): digest(p) for p in sorted(stage.rglob("*")) if p.is_file()}}
-        (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         if destination.exists():
             shutil.rmtree(destination)
         shutil.copytree(stage, destination)

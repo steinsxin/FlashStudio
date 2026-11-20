@@ -1,7 +1,7 @@
 {
   "name": "flashstudio",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +10,8 @@
     "tauri": "tauri",
     "test": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
     "test:ui": "node scripts/ui-smoke.mjs",
+    "test:version": "node --test packaging/common/version.test.mjs",
+    "version:sync": "node packaging/common/version.mjs",
     "engine:prepare": "node scripts/prepare-openocd.mjs",
     "package:linux": "node packaging/linux/build.mjs",
     "package:arch": "node packaging/linux/arch/build.mjs",

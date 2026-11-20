@@ -30,6 +30,9 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - name: Read VERSION and synchronize package metadata
+        run: npm run version:sync
+      - run: npm run test:version
       - name: Set up native MSVC Rust
         run: |
           rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal

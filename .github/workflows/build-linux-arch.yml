@@ -66,6 +66,8 @@ jobs:
           chown -R builder:builder /workspace
           runuser --user builder -- /bin/bash -euo pipefail <<'BUILD'
           cd /workspace
+          npm run version:sync
+          npm run test:version
           npm ci
           npm run engine:prepare
           python3 scripts/test-prepare-openocd.py

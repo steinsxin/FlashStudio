@@ -1,10 +1,12 @@
-param([Parameter(Mandatory = $true)][string]$Installer)
+param(
+    [Parameter(Mandatory = $true)][string]$Installer,
+    [string]$TestRoot = $env:RUNNER_TEMP
+)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-if (-not $env:RUNNER_TEMP) { throw 'Run this installation test only on a disposable CI runner.' }
-$project = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+if (-not $TestRoot) { throw 'Specify -TestRoot on a disposable Windows test machine, or run on a CI runner.' }
 $installerPath = (Resolve-Path $Installer).Path
-$installDir = Join-Path $env:RUNNER_TEMP 'FlashStudio install test'
+$installDir = Join-Path ([IO.Path]::GetFullPath($TestRoot)) 'FlashStudio install test'
 $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FlashStudio'
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'FlashStudio\FlashStudio.lnk'
 if ((Test-Path $registry) -or (Test-Path $installDir) -or (Test-Path $shortcut)) {
@@ -22,16 +24,7 @@ try {
     if (-not (Test-Path $shortcut)) { throw 'Start menu shortcut missing.' }
     $entry = Get-ItemProperty $registry
     if ($entry.DisplayName -ne 'FlashStudio' -or -not $entry.UninstallString) { throw 'Uninstall registration missing.' }
-    # A developer runner already has VC runtimes. Inspect imports so it cannot
-    # hide an accidental dependency on a user's separately installed VC runtime.
-    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-    $dumpbin = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
-    if (-not $dumpbin) { throw 'Cannot locate dumpbin for the installed executable dependency check.' }
-    $imports = (& $dumpbin /dependents (Join-Path $installDir 'flashstudio.exe')) -join "`n"
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect installed executable imports.' }
-    if ($imports -match '(?im)^\s*(?:VCRUNTIME|MSVCP)\d\S*\.dll') { throw 'Application unexpectedly requires a separate Visual C++ runtime.' }
-    & python (Join-Path $project 'packaging/common/verify-engine.py') (Join-Path $installDir 'openocd') win32-x64
-    if ($LASTEXITCODE -ne 0) { throw 'Installed engine validation failed.' }
+    & (Join-Path $PSScriptRoot 'verify-engine.ps1') -EngineRoot (Join-Path $installDir 'openocd')
     $app = Start-Process -FilePath (Join-Path $installDir 'flashstudio.exe') -PassThru
     Start-Sleep -Seconds 5
     if ($app.HasExited) { throw "Installed application exited during startup: $($app.ExitCode)" }
