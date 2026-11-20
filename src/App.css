@@ -122,14 +122,6 @@ main { width: 100%; max-width: 1100px; margin: 0 auto; padding: 22px 24px 20px; 
 .spinning { animation: spin 2s linear infinite; }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(440%); } }
 @keyframes spin { to { transform: rotate(360deg); } }
-.log-section { margin-top: 10px; }
-.log-heading { height: 35px; display: flex; align-items: center; justify-content: space-between; }
-.log-content { max-height: 180px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; padding: 13px 16px; background: var(--card); font-size: 10px; line-height: 1.9; }
-.log-line { display: flex; gap: 15px; align-items: baseline; }
-.log-line time { color: var(--muted); flex-shrink: 0; }
-.log-line span { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
-.log-error span { color: var(--danger); }
-.log-empty { color: var(--muted); text-align: center; padding: 15px; font-family: inherit; }
 .preview-notice { color: var(--muted); font-size: 11px; margin-bottom: 16px; }
 .notice { display: flex; align-items: center; gap: 9px; padding: 11px 13px; margin-bottom: 16px; border-radius: 6px; background: var(--accent-soft); color: var(--secondary); font-size: 11px; line-height: 1.7; }
 .notice>span { flex: 1; overflow-wrap: anywhere; }

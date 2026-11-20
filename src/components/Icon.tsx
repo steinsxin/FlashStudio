@@ -30,7 +30,6 @@ const paths = {
   check: "m5 12 4 4L19 6",
   close: "m6 6 12 12M6 18 18 6",
   shield: "M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6L12 2Zm-4 10 3 3 5-6",
-  terminal: "m4 6 6 6-6 6m9 0h7",
   clock: "M12 6v6l4 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0",
   copy: "M9 9h12v12H9z M15 5V3H3v12h2",
   bolt: "m13 2-9 12h7l-1 8 10-13h-8l1-7Z",

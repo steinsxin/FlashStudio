@@ -8,7 +8,6 @@ use engine::{Operation, OperationRequest, Plan};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::VecDeque,
     fs,
     io::Write,
     path::PathBuf,
@@ -58,13 +57,6 @@ impl Drop for Firmware {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LogLine {
-    sequence: u64,
-    time: u64,
-    text: String,
-}
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct Job {
     id: String,
     operation: Operation,
@@ -72,28 +64,15 @@ struct Job {
     started_at: u64,
     finished_at: Option<u64>,
     message: String,
-    logs: VecDeque<LogLine>,
-    next_sequence: u64,
-    plan: Plan,
     request: OperationRequest,
     firmware: Option<FirmwareInfo>,
     verification_stage: Option<verification::VerificationStage>,
 }
 impl Job {
-    fn log(&mut self, text: String) {
-        // Keep milestones outside the bounded log buffer so progress survives
-        // polling, UI reloads and verbose target output.
+    fn observe_output(&mut self, text: &str) {
+        // Keep only the current milestone; raw engine output is not retained.
         if let Some(stage) = self.verification_stage.as_mut() {
-            stage.observe(&text);
-        }
-        self.logs.push_back(LogLine {
-            sequence: self.next_sequence,
-            time: now(),
-            text,
-        });
-        self.next_sequence += 1;
-        if self.logs.len() > 1000 {
-            self.logs.pop_front();
+            stage.observe(text);
         }
     }
 }
@@ -192,25 +171,18 @@ fn start_operation(
         return Err("已有任务正在执行".into());
     }
     let plan = plan_for(&request, &runtime)?;
-    let mut job = Job {
+    let job = Job {
         id: id(),
         operation: request.operation,
         status: "running".into(),
         started_at: now(),
         finished_at: None,
         message: "OpenOCD 正在执行".into(),
-        logs: VecDeque::new(),
-        next_sequence: 0,
-        plan: plan.clone(),
         request: request.clone(),
         firmware: runtime.firmware.as_ref().map(|f| f.info.clone()),
         verification_stage: (request.operation == Operation::Verify)
             .then_some(verification::VerificationStage::Connecting),
     };
-    job.log(format!(
-        "开始 {:?} · {}",
-        request.operation, request.config.target
-    ));
     runtime.job = Some(job.clone());
     let cancel = Arc::new(AtomicBool::new(false));
     runtime.cancel = Some(cancel.clone());
@@ -233,7 +205,7 @@ fn start_operation(
                 if let Ok(mut runtime) = output_state.0.lock()
                     && let Some(job) = runtime.job.as_mut().filter(|j| j.id == output_id)
                 {
-                    job.log(text);
+                    job.observe_output(&text);
                 }
             }),
         );
@@ -248,7 +220,7 @@ fn start_operation(
             ),
             runner::Outcome::Success => (
                 "failed",
-                "OpenOCD 未返回操作完成标记，请检查配置与日志".into(),
+                "OpenOCD 未确认操作完成，请检查目标配置并重试".into(),
             ),
             runner::Outcome::Failed(error) => ("failed", error),
             runner::Outcome::Cancelled if request.operation == Operation::Verify => {
@@ -269,9 +241,8 @@ fn start_operation(
         if let Ok(mut runtime) = shared.0.lock() {
             if let Some(job) = runtime.job.as_mut().filter(|j| j.id == job_id) {
                 job.status = status.into();
-                job.message = message.clone();
+                job.message = message;
                 job.finished_at = Some(now());
-                job.log(message);
             }
             runtime.cancel = None;
         }

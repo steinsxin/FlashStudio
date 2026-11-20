@@ -4,12 +4,11 @@ import { listen } from "@tauri-apps/api/event";
 import { Icon, type IconName } from "./components/Icon";
 import { VerificationPanel } from "./components/verification/VerificationPanel";
 import appVersion from "../VERSION?raw";
-import { adapters, adapterName, desktop, download, loadConfig, operationNames, planText, statusNames, targetName, targets, validAddress, validate, type Config, type EngineInfo, type Firmware, type Job, type Operation, type OperationRequest } from "./lib/flash";
+import { adapters, adapterName, desktop, loadConfig, operationNames, statusNames, targetName, targets, validAddress, validate, type Config, type EngineInfo, type Firmware, type Job, type Operation, type OperationRequest } from "./lib/flash";
 import "./App.css";
 
 const operationIcons: Record<Operation, IconName> = { probe: "plug", flash: "bolt", verify: "shield", erase: "trash" };
 const operationDescriptions: Record<Operation, string> = { probe: "检测探针与目标芯片的连接", flash: "选择固件，写入目标芯片", verify: "核对参考固件与芯片内容的一致性", erase: "按 Bank 或扇区清除 Flash 内容" };
-const time = (value: number) => new Date(value).toLocaleTimeString("zh-CN", { hour12: false });
 const size = (value: number) => value < 1024 ? `${value} B` : `${(value / 1024).toFixed(1)} KiB`;
 function Modal({ title, children, close }: { title: string; children: ReactNode; close: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -44,14 +43,11 @@ function App() {
   const [cancelling, setCancelling] = useState(false);
   const [help, setHelp] = useState(false);
   const [advanced, setAdvanced] = useState(false);
-  const [logsOpen, setLogsOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [dark, setDark] = useState(() => { try { return localStorage.getItem("flashstudio.theme") === "dark"; } catch { return false; } });
   const [tick, setTick] = useState(Date.now());
   const busyRef = useRef(false);
   const engineCheck = useRef<Promise<EngineInfo> | null>(null);
-  const logRef = useRef<HTMLDivElement>(null);
-  const followLog = useRef(true);
   const isRunning = job?.status === "running";
   const busy = pending || hydrating || isRunning;
   const updateConfig = <K extends keyof Config>(key: K, value: Config[K]) => setConfig(current => ({ ...current, [key]: value }));
@@ -98,15 +94,11 @@ function App() {
   useEffect(() => {
     if (!job || job.status === "running") return;
     setCancelling(false);
-    if (job.status === "failed") setLogsOpen(true);
   }, [job?.id, job?.status]);
   useEffect(() => {
     if (!isRunning) return;
     const timer = setInterval(() => setTick(Date.now()), 250); return () => clearInterval(timer);
   }, [isRunning]);
-  useEffect(() => {
-    if (followLog.current && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [job?.nextSequence, logsOpen]);
   const work = useCallback(async (action: () => Promise<void>) => {
     if (busyRef.current) return;
     busyRef.current = true; setPending(true); setError(""); setNotice("");
@@ -124,14 +116,13 @@ function App() {
   };
   const start = (next: Operation, confirmed = false) => {
     if (busy || !desktop) return;
-    setEraseConfirm(false); followLog.current = true;
+    setEraseConfirm(false);
     void work(async () => {
       const nextRequest = { ...request, operation: next, eraseConfirmed: confirmed };
       const problem = validate(nextRequest);
       if (problem) throw new Error(problem);
       setJob(await invoke<Job>("start_operation", { request: nextRequest }));
       setTick(Date.now());
-      if (next === "probe") setLogsOpen(true);
     });
   };
   const authorize = () => {
@@ -142,7 +133,6 @@ function App() {
     });
   };
   const duration = job ? Math.max(0, ((job.finishedAt ?? tick) - job.startedAt) / 1000).toFixed(1) : "0.0";
-  const logText = job ? `${operationNames[job.operation]} · ${statusNames[job.status]}\n${planText(job.plan)}\n\n${job.logs.map(l => `[${time(l.time)}] ${l.text}`).join("\n")}\n` : "";
 
   return <div className="app-shell" data-operation={operation}>
     <aside className="sidebar">
@@ -200,7 +190,7 @@ function App() {
             <div className="erase-intro"><Icon name="trash" size={24}/><div><h3>指定区域擦除</h3><p>仅擦除所选 Bank，双 Bank 芯片需分别操作。</p></div></div>
             <div className="form-row"><Field label="Flash Bank 编号"><input aria-label="Flash Bank 编号" type="number" min="0" max="255" value={bank} onChange={e => setBank(e.target.value)}/></Field><Field label="擦除方式"><select value={eraseMode} onChange={e => setEraseMode(e.target.value)}><option value="bank">该 Bank 全部扇区</option><option value="sectors">指定扇区范围</option></select></Field></div>
             {eraseMode === "sectors" && <div className="form-row"><Field label="起始扇区"><input type="number" min="0" value={firstSector} onChange={e => setFirstSector(e.target.value)}/></Field><Field label="结束扇区"><input type="number" min="0" value={lastSector} placeholder="留空至末尾" onChange={e => setLastSector(e.target.value)}/></Field></div>}
-            <p className="footnote warning">擦除不可恢复，请先检测连接，在日志中核对 Bank 编号。</p>
+            <p className="footnote warning">擦除不可恢复，请先检测连接，并确认 Bank 编号及扇区范围。</p>
           </div>}
         </fieldset>
         <div className="execution-row">
@@ -210,14 +200,11 @@ function App() {
         </div>
         {isRunning && <div className="activity-track" aria-label="OpenOCD 正在执行"><span/></div>}
       </section>}
-      <section className={`log-section ${logsOpen ? "open" : ""}`}><div className="log-heading"><button className="text-button" aria-expanded={logsOpen} onClick={() => setLogsOpen(!logsOpen)}><Icon name="terminal" size={16}/>运行日志<Icon name="down" size={13} className={logsOpen ? "expanded" : ""}/></button>{logsOpen && <button className="text-button" disabled={!job} onClick={() => download(`flashstudio-${job!.id}.log`, logText)}><Icon name="download" size={14}/>导出</button>}</div>
-        {logsOpen && <div className="log-content mono" ref={logRef} onScroll={() => { const el = logRef.current; if (el) followLog.current = el.scrollHeight - el.scrollTop - el.clientHeight < 35; }}>{job?.logs.length ? job.logs.map(line => <div className={`log-line ${/error|failed|失败|错误/i.test(line.text) ? "log-error" : ""}`} key={`${job.id}-${line.sequence}`}><time>{time(line.time)}</time><span>{line.text}</span></div>) : <p className="log-empty">执行任务后显示运行信息</p>}</div>}
-      </section>
     </main>
     </div>
     {eraseConfirm && <Modal title="确认擦除 Flash" close={() => setEraseConfirm(false)}><div className="modal-copy"><p>{targetName(config.target)} · {adapterName(config.adapter)}{config.serial ? ` · ${config.serial}` : ""}</p><div className="confirm-range mono">{eraseRange}</div><p>此范围内的固件和数据将被清除，无法撤销。擦除后芯片保持暂停。</p></div><div className="modal-actions"><button autoFocus className="secondary" onClick={() => setEraseConfirm(false)}>返回检查</button><button className="danger" onClick={() => start("erase", true)}>确认擦除</button></div></Modal>}
     {cancelConfirm && <Modal title="取消当前操作" close={() => setCancelConfirm(false)}><div className="modal-copy"><p>{job?.operation === "verify" ? "将停止本次校验。未完成的比较不能代表完整校验结果，可稍后重新开始。" : job?.operation === "probe" ? "将停止本次连接检测。" : "已写入或擦除的数据无法回滚，取消后请重新烧录并校验。"}</p></div><div className="modal-actions"><button autoFocus className="secondary" onClick={() => setCancelConfirm(false)}>继续等待</button><button className="danger" onClick={() => { setCancelConfirm(false); setCancelling(true); void invoke("cancel_operation", { jobId: job!.id }).catch(e => { setCancelling(false); setError(String(e)); }); }}>确认取消</button></div></Modal>}
-    {help && <Modal title="使用说明" close={() => setHelp(false)}><div className="modal-copy help-copy"><ol><li>为目标板供电，连接探针，选择对应芯片。</li><li>选择固件；BIN 按实际内存布局填写起始地址。</li><li>点击开始烧录，等待校验完成。</li></ol><p>软件已自带 OpenOCD，无需另外安装或配置路径。</p>{engine?.canAuthorizeUsb ? <><p>Linux 提示 USB 权限不足时，点击下方按钮，经系统授权后安装权限规则，再重新插拔探针。</p><button className="secondary" disabled={busy} onClick={authorize}><Icon name="shield" size={16}/>授权访问探针</button>{notice && <p className="success-text" role="status">{notice}</p>}{error && <p className="warning" role="alert">{error}</p>}</> : <p>Windows 的 USB 探针需要兼容驱动；无法连接时请检查驱动、目标板供电与接线。</p>}<p>检测连接会复位芯片。复位下连接需 NRST，可在高级设置中启用。</p><small className="muted">内置 OpenOCD {engine?.version ?? "0.12.0-7"} · 单次任务日志，关闭应用后不保留</small></div></Modal>}
+    {help && <Modal title="使用说明" close={() => setHelp(false)}><div className="modal-copy help-copy"><ol><li>为目标板供电，连接探针，选择对应芯片。</li><li>选择固件；BIN 按实际内存布局填写起始地址。</li><li>点击开始烧录，等待校验完成。</li></ol><p>软件已自带 OpenOCD，无需另外安装或配置路径。</p>{engine?.canAuthorizeUsb ? <><p>Linux 提示 USB 权限不足时，点击下方按钮，经系统授权后安装权限规则，再重新插拔探针。</p><button className="secondary" disabled={busy} onClick={authorize}><Icon name="shield" size={16}/>授权访问探针</button>{notice && <p className="success-text" role="status">{notice}</p>}{error && <p className="warning" role="alert">{error}</p>}</> : <p>Windows 的 USB 探针需要兼容驱动；无法连接时请检查驱动、目标板供电与接线。</p>}<p>检测连接会复位芯片。复位下连接需 NRST，可在高级设置中启用。</p><small className="muted">内置 OpenOCD {engine?.version ?? "0.12.0-7"}</small></div></Modal>}
   </div>;
 }
 export default App;

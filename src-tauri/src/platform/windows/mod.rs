@@ -4,7 +4,7 @@ pub const ENGINE_EXECUTABLE: &str = "bin/openocd.exe";
 pub const CAN_AUTHORIZE_USB: bool = false;
 
 pub fn configure_process(command: &mut Command) {
-    // CREATE_NO_WINDOW: OpenOCD logs go to the app, never a console popup.
+    // CREATE_NO_WINDOW: capture engine output without opening a console window.
     command.creation_flags(0x08000000);
 }
 

@@ -230,7 +230,7 @@ pub fn build_plan(r: &OperationRequest, firmware: Option<(&Path, &str)>) -> Resu
     }
     let body = steps.join("; ");
     // Explicitly propagate Tcl failures: exit code 0 alone is otherwise unsafe.
-    args.extend(["-c".into(), format!("if {{[catch {{ {body} }} message]}} {{ echo $message; shutdown error }} else {{ echo FLASHSTUDIO_SUCCESS; shutdown }}")]);
+    args.extend(["-c".into(), format!("if {{[catch {{ {body} }} message]}} {{ echo \"FLASHSTUDIO_ERROR: $message\"; shutdown error }} else {{ echo FLASHSTUDIO_SUCCESS; shutdown }}")]);
     Ok(Plan {
         executable: c.executable.trim().into(),
         args,
@@ -293,7 +293,9 @@ mod tests {
     }
     #[test]
     fn verification_milestones_follow_real_tcl_execution_and_failures() {
+        use crate::runner::Outcome;
         use crate::verification::{COMPARING_MARKER, MATCHED_MARKER, VerificationStage};
+        use std::sync::{Arc, Mutex, atomic::AtomicBool};
         let engine = crate::bundled::from_root(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/openocd"),
         )
@@ -306,30 +308,45 @@ mod tests {
         // Only execute the generated operation body. Every hardware command is
         // replaced before it runs; this exercises the bundled Tcl interpreter.
         let fixture = "foreach cmd {init reset verify_image} {if {[llength [info commands $cmd]]} {rename $cmd fs_original_$cmd}; proc $cmd {args} {}}";
-        for (failure, comparing, matched) in [
-            ("", true, true),
-            ("proc init {args} {error CONNECTION_FAILED}", false, false),
+        for (failure, comparing, matched, reason) in [
+            ("", true, true, ""),
+            (
+                "proc init {args} {error CONNECTION_FAILED}",
+                false,
+                false,
+                "CONNECTION_FAILED",
+            ),
             (
                 "proc verify_image {args} {error VERIFY_FAILED}",
                 true,
                 false,
+                "VERIFY_FAILED",
             ),
             (
                 "proc reset {mode} {if {$mode eq \"run\"} {error RESET_FAILED}}",
                 true,
                 true,
+                "RESET_FAILED",
             ),
         ] {
             let setup = format!("{fixture}; {failure}");
-            let result = std::process::Command::new(&engine.executable)
-                .args(["-c", &setup, "-c", plan.args.last().unwrap()])
-                .output()
-                .unwrap();
-            let output = format!(
-                "{}{}",
-                String::from_utf8_lossy(&result.stdout),
-                String::from_utf8_lossy(&result.stderr)
+            let lines = Arc::new(Mutex::new(Vec::new()));
+            let captured = lines.clone();
+            let result = crate::runner::execute(
+                &Plan {
+                    executable: engine.executable.to_string_lossy().into_owned(),
+                    args: vec![
+                        "-c".into(),
+                        setup,
+                        "-c".into(),
+                        plan.args.last().unwrap().clone(),
+                    ],
+                    timeout_secs: 5,
+                },
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(move |line| captured.lock().unwrap().push(line)),
             );
+            let output = lines.lock().unwrap().join("\n");
             let contains = |marker: &str| output.lines().any(|line| line.trim() == marker);
             assert_eq!(contains(COMPARING_MARKER), comparing, "{output}");
             assert_eq!(contains(MATCHED_MARKER), matched, "{output}");
@@ -338,7 +355,14 @@ mod tests {
                 failure.is_empty(),
                 "{output}"
             );
-            assert_eq!(result.status.success(), failure.is_empty(), "{output}");
+            if failure.is_empty() {
+                assert_eq!(result, Outcome::Success, "{output}");
+            } else {
+                assert!(
+                    matches!(&result, Outcome::Failed(message) if message.contains(reason)),
+                    "{result:?}: {output}"
+                );
+            }
             let mut stage = VerificationStage::Connecting;
             for line in output.lines() {
                 stage.observe(line);

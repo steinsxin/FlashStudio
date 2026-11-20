@@ -8,7 +8,7 @@
 
 - 不提供操作记录页面，不保存任务历史；旧版本的本地历史在升级后清除。
 - SWD / JTAG、序列号、复位下连接和超时放在「高级设置」。
-- 日志默认收起，连接检测或任务失败时自动展开；可导出当前任务最近 1000 行日志。
+- 不提供运行日志与导出入口，不缓存逐行日志；界面仅显示操作状态、校验阶段与简短失败原因。
 - 引擎自动就绪，没有 OpenOCD 路径、scripts 路径或环境配置页面。
 - 保留连接参数与主题偏好；每次启动重新选择固件。
 
@@ -150,7 +150,7 @@ npm run test:ui
 - `src-tauri/src/bundled.rs`：内置资源定位，禁止回退系统引擎。
 - `src-tauri/src/engine.rs`：OpenOCD 命令规划与参数校验。
 - `src-tauri/src/verification.rs`：校验阶段标记与状态推进。
-- `src-tauri/src/runner.rs`：共用子进程、日志、取消和超时逻辑。
+- `src-tauri/src/runner.rs`：共用子进程、错误摘要、取消和超时逻辑。
 - `src-tauri/src/platform/mod.rs`：操作系统共用接口；`linux/` 实现 USB 授权，`windows/` 实现 Windows 进程设置。
 - `scripts/prepare-openocd.py`、`packaging/openocd.lock.json`：固定引擎下载与完整性验证。
 - `packaging/common/`：共用构建接口、版本与架构检查、产物校验、已安装引擎验证。

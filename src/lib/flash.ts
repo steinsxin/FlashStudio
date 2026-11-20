@@ -14,11 +14,9 @@ export interface OperationRequest {
   verifyAfterWrite: boolean; resetAfter: boolean; bank: number; firstSector: number;
   lastSector: number | null; eraseConfirmed: boolean;
 }
-export interface Plan { executable: string; args: string[]; timeoutSecs: number }
 export interface Job {
   id: string; operation: Operation; status: JobStatus; startedAt: number; finishedAt: number | null;
-  message: string; logs: { sequence: number; time: number; text: string }[]; nextSequence: number;
-  plan: Plan; request: OperationRequest; firmware: Firmware | null;
+  message: string; request: OperationRequest; firmware: Firmware | null;
   verificationStage: "connecting" | "comparing" | "matched" | null;
 }
 export interface EngineInfo { version: string; platform: string; canAuthorizeUsb: boolean; usbRulesInstalled: boolean }
@@ -69,12 +67,4 @@ export function validate(request: OperationRequest): string {
 }
 export function validAddress(address: string) {
   return /^(0x[\da-f]+|\d+)$/i.test(address.trim()) && Number(address) >= 0 && Number(address) <= 0xffffffff;
-}
-export function download(name: string, text: string, type = "text/plain") {
-  const url = URL.createObjectURL(new Blob([text], { type }));
-  const a = document.createElement("a"); a.href = url; a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-export function planText(plan: Plan) {
-  return [plan.executable, ...plan.args].map(arg => JSON.stringify(arg)).join(" ");
 }

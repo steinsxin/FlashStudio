@@ -52,7 +52,7 @@ function installFixture() {
         f.starts.push(structuredClone(args.request));
         f.job = { id: `job-${f.starts.length}`, operation: args.request.operation, status: 'running', startedAt: Date.now(), finishedAt: null, request: args.request, firmware: f.firmware,
           verificationStage: args.request.operation === 'verify' ? 'connecting' : null,
-          logs: [{ sequence: 0, time: Date.now(), text: 'Info : fixture process started' }], nextSequence: 1, message: 'OpenOCD 正在执行', plan: { executable: 'openocd', args: ['-f', args.request.config.target], timeoutSecs: 120 } };
+          message: 'OpenOCD 正在执行' };
         return structuredClone(f.job);
       }
       if (command === 'cancel_operation') { f.cancelCount++; f.job.status = 'cancelled'; f.job.finishedAt = Date.now(); f.job.message = '操作已取消'; return; }
@@ -78,10 +78,10 @@ try {
   await until(`document.body.innerText.includes('内置引擎就绪') && !document.querySelector('.probe-button').disabled`);
   assert.equal(await evaluate(`document.querySelectorAll('nav button').length`), 3);
   assert.equal(await evaluate(`document.querySelector('nav [aria-current=page]')?.textContent`), '固件烧录');
-  assert.equal(await evaluate(`document.body.innerText.includes('操作记录') || document.body.innerText.includes('引擎设置')`), false);
+  assert.equal(await evaluate(`document.body.innerText.includes('操作记录') || document.body.innerText.includes('引擎设置') || document.body.innerText.includes('日志') || document.body.innerText.includes('导出')`), false);
   assert.equal(await evaluate(`localStorage.getItem('flashstudio.records')`), null);
   assert.equal(await evaluate(`JSON.parse(localStorage.getItem('flashstudio.config')).executable`), undefined);
-  assert.equal(await evaluate(`!!document.querySelector('.advanced-panel') || !!document.querySelector('.log-content')`), false);
+  assert.equal(await evaluate(`!!document.querySelector('.advanced-panel')`), false);
   assert.equal(await evaluate(`document.querySelector('.execution-row').getBoundingClientRect().bottom < innerHeight`), true);
   await screenshot('sidebar-workspace');
   await file('application.bin');
@@ -119,7 +119,7 @@ try {
   await delay(750);
   assert.equal(await evaluate(`document.querySelector('[role=progressbar]').getAttribute('aria-valuenow')`), '0');
   assert.equal(await evaluate(`document.querySelector('[aria-label="选择参考固件"]').disabled`), true);
-  await evaluate(`window.__fixture.job.verificationStage='comparing'; window.__fixture.job.logs=[]`);
+  await evaluate(`window.__fixture.job.verificationStage='comparing'`);
   await until(`document.querySelector('[role=progressbar]').getAttribute('aria-valuenow')==='1'`);
   assert.equal(await evaluate(`document.querySelector('[aria-current=step]').textContent`), '2对比内容');
   await delay(600);
@@ -148,6 +148,7 @@ try {
   await evaluate(`window.__fixture.job.verificationStage='comparing'`);
   await finish('failed', 'verify mismatch');
   await until(`document.querySelector('.verification-message').innerText.includes('verify mismatch')`);
+  assert.equal(await evaluate(`document.body.innerText.includes('日志') || document.body.innerText.includes('导出')`), false);
   assert.equal(await evaluate(`document.querySelector('[role=progressbar]').getAttribute('aria-valuenow')`), '1');
   assert.equal(await evaluate(`document.querySelectorAll('.verification-progress .active').length`), 0);
   await screenshot('verify-failed');
@@ -171,7 +172,6 @@ try {
   await until(`document.querySelector('[role=alert]')?.textContent.includes('OpenOCD test launch failure')`);
   assert.equal(await evaluate(`document.querySelector('.verification-result').classList.contains('success')`), false);
   await evaluate(`window.__fixture.reject=false`); await click('关闭提示');
-  if (await evaluate(`!!document.querySelector('.log-content')`)) await click('运行日志');
   await click('切换深色主题'); await screenshot('verify-dark'); await click('切换浅色主题');
   await cdp('Emulation.setDeviceMetricsOverride', { width: 800, height: 650, deviceScaleFactor: 1, mobile: false });
   assert.equal(await evaluate(`document.querySelector('main').scrollWidth <= document.querySelector('main').clientWidth`), true);
